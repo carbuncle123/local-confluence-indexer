@@ -59,7 +59,8 @@ uv run python tools/search_docs.py "認証API refresh token" --space PROJECT_B -
 このコマンドは、次を含む検索結果を返します。
 
 - path
-- line range
+- page 単位のまとまり
+- chunk ごとの line range
 - URL
 - version
 - fetched_at
@@ -161,6 +162,8 @@ uv run python tools/search_docs.py "認証 API" --space PROJECT_B --root-page-id
 - 現状のインデックス更新は page 単位差分ではなく、space 単位再構築です
 - page tree target を使っても、検索インデックス自体は現状 space 単位です
 - `--root-page-id` 検索は state DB の membership を使って結果を絞っています
+- Markdown 出力は同一ページ内の複数 hit を 1 つのページ結果に集約します
+- 抜粋中の `[[...]]` はクエリ一致語の強調です
 - 検索は `title`、`headings`、`body` を対象にしており、意味ベース検索ではありません
 - まずは検索 CLI で候補を絞ってから本文を見る方が、Codex CLI の回答品質が安定します
 

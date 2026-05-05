@@ -16,7 +16,7 @@ class FakeClient:
     def list_pages_in_space(self, **kwargs) -> list[dict]:
         return [{"id": "123"}]
 
-    def list_descendant_pages(self, root_page_id: str, *, space_key: str) -> list[dict]:
+    def search_descendant_pages_by_cql(self, root_page_id: str, *, space_key: str) -> list[dict]:
         assert root_page_id == "100"
         assert space_key == "PROJECT_A"
         return [{"id": "123"}, {"id": "124"}]

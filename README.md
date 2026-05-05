@@ -58,6 +58,8 @@ uv run python tools/search_docs.py "認証API refresh token" --space PROJECT_A -
 uv run python tools/search_docs.py "認証API refresh token" --space PROJECT_B --root-page-id 123456 --top-k 10
 ```
 
+Markdown 出力では、同一ページ内の複数 hit をページ単位でまとめ、抜粋中の一致語を `[[...]]` で強調表示します。
+
 パスだけ見たい場合:
 
 ```bash
@@ -103,6 +105,8 @@ targets:
 ```bash
 scripts/run_incremental_sync.sh
 ```
+
+このスクリプトは target ごとの同期自体は `--reindex` なしで流し、最後に成功した space ごとに 1 回だけ再インデックスします。
 
 Codex CLI からの使い方は [docs/codex-cli-usage.md](/Users/takeshi/ghq/github.com/carbuncle123/local-confluence-indexer/docs/codex-cli-usage.md) を参照してください。
 

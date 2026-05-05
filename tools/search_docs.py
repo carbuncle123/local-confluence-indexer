@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sqlite3
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ class SearchResult:
     """Normalized search result returned by the CLI."""
 
     chunk_id: str
+    page_id: str
     path: str
     title: str
     headings: list[str]
@@ -39,6 +41,22 @@ class SearchResult:
     labels: list[str]
     rank: float
     score: float
+
+
+@dataclass(slots=True)
+class SearchPageGroup:
+    """Grouped search results for a single document page."""
+
+    page_id: str
+    path: str
+    title: str
+    url: str | None
+    version_number: int | None
+    version_created_at: str | None
+    fetched_at: str | None
+    labels: list[str]
+    score: float
+    results: list[SearchResult]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,6 +102,12 @@ def build_match_query(query: str) -> str:
     if not tokens:
         return f'"{query}"'
     return " OR ".join(f'"{token.replace(chr(34), "")}"' for token in tokens)
+
+
+def query_terms(query: str) -> list[str]:
+    """Return normalized query terms for highlighting."""
+
+    return [token.strip() for token in query.split() if token.strip()]
 
 
 def compute_metadata_boost(title: str, labels: list[str], query: str) -> float:
@@ -186,6 +210,7 @@ def query_results(
         results.append(
             SearchResult(
                 chunk_id=row["chunk_id"],
+                page_id=row["page_id"],
                 path=row["path"],
                 title=row["title"],
                 headings=headings,
@@ -213,6 +238,50 @@ def excerpt_from_body(body: str, limit: int = 240) -> str:
     return compact[:limit]
 
 
+def highlight_excerpt(text: str, query: str) -> str:
+    """Highlight query terms in a short excerpt."""
+
+    highlighted = text
+    for term in sorted(query_terms(query), key=len, reverse=True):
+        pattern = re.compile(re.escape(term), re.IGNORECASE)
+        highlighted = pattern.sub(lambda match: f"[[{match.group(0)}]]", highlighted)
+    return highlighted
+
+
+def group_results_by_page(results: list[SearchResult]) -> list[SearchPageGroup]:
+    """Group chunk-level results into page-level result groups."""
+
+    grouped: dict[str, list[SearchResult]] = {}
+    order: list[str] = []
+    for result in results:
+        if result.page_id not in grouped:
+            grouped[result.page_id] = []
+            order.append(result.page_id)
+        grouped[result.page_id].append(result)
+
+    page_groups: list[SearchPageGroup] = []
+    for page_id in order:
+        page_results = grouped[page_id]
+        top_result = max(page_results, key=lambda item: item.score)
+        page_groups.append(
+            SearchPageGroup(
+                page_id=page_id,
+                path=top_result.path,
+                title=top_result.title,
+                url=top_result.url,
+                version_number=top_result.version_number,
+                version_created_at=top_result.version_created_at,
+                fetched_at=top_result.fetched_at,
+                labels=top_result.labels,
+                score=top_result.score,
+                results=sorted(page_results, key=lambda item: item.score, reverse=True),
+            )
+        )
+
+    page_groups.sort(key=lambda item: item.score, reverse=True)
+    return page_groups
+
+
 def render_markdown(
     results: list[SearchResult],
     query: str,
@@ -222,43 +291,59 @@ def render_markdown(
 ) -> str:
     """Render search results in Markdown format."""
 
+    page_groups = group_results_by_page(results)
+    target_filter = (
+        f"page_tree:{space_key}:{root_page_id}"
+        if space_key and root_page_id
+        else "ALL"
+    )
+
     lines = [
         "# Search Results",
         "",
         f"Query: {query}  ",
         f"Space: {space_key or 'ALL'}  ",
         f"Root Page: {root_page_id or 'ALL'}  ",
+        f"Target Filter: {target_filter}  ",
         f"Top K: {top_k}",
         "",
     ]
 
-    for index, result in enumerate(results, start=1):
-        heading_text = " > ".join(result.headings) if result.headings else result.title
-        label_text = ", ".join(result.labels)
-        line_range = (
-            f"{result.start_line}-{result.end_line}"
-            if result.start_line is not None and result.end_line is not None
-            else ""
-        )
+    for index, group in enumerate(page_groups, start=1):
+        label_text = ", ".join(group.labels)
         lines.extend(
             [
-                f"## {index}. {heading_text}",
+                f"## {index}. {group.title}",
                 "",
-                f"- Score: {result.score:.3f}",
-                f"- Path: {result.path}",
-                f"- Lines: {line_range}",
-                f"- URL: {result.url or ''}",
-                f"- Version: {result.version_number or ''}",
-                f"- Updated: {result.version_created_at or ''}",
-                f"- Fetched: {result.fetched_at or ''}",
+                f"- Score: {group.score:.3f}",
+                f"- Path: {group.path}",
+                f"- URL: {group.url or ''}",
+                f"- Version: {group.version_number or ''}",
+                f"- Updated: {group.version_created_at or ''}",
+                f"- Fetched: {group.fetched_at or ''}",
                 f"- Labels: {label_text}",
-                "",
-                "```excerpt",
-                excerpt_from_body(result.body),
-                "```",
+                f"- Matching Chunks: {len(group.results)}",
                 "",
             ]
         )
+        for match_index, result in enumerate(group.results, start=1):
+            heading_text = " > ".join(result.headings) if result.headings else result.title
+            line_range = (
+                f"{result.start_line}-{result.end_line}"
+                if result.start_line is not None and result.end_line is not None
+                else ""
+            )
+            lines.extend(
+                [
+                    f"### Match {match_index}: {heading_text}",
+                    "",
+                    f"- Lines: {line_range}",
+                    f"- Chunk Score: {result.score:.3f}",
+                    "",
+                    f"> {highlight_excerpt(excerpt_from_body(result.body), query)}",
+                    "",
+                ]
+            )
 
     return "\n".join(lines).rstrip() + "\n"
 

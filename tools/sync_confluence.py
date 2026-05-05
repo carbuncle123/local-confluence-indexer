@@ -516,7 +516,10 @@ def run_full_sync(
                 )
                 root_page["space_key"] = space_key
                 target_name = root_page.get("title")
-                summaries = [{"id": root_page_id}, *client.list_descendant_pages(root_page_id, space_key=space_key)]
+                summaries = [
+                    {"id": root_page_id},
+                    *client.search_descendant_pages_by_cql(root_page_id, space_key=space_key),
+                ]
             else:
                 summaries = client.list_pages_in_space(
                     space_key=space_key,
