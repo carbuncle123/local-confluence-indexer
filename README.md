@@ -58,6 +58,8 @@ uv run python tools/search_docs.py "認証API refresh token" --space PROJECT_A -
 uv run python tools/search_docs.py "認証API refresh token" --space PROJECT_B --root-page-id 123456 --top-k 10
 ```
 
+Markdown 出力では、同一ページ内の複数 hit をページ単位でまとめ、抜粋中の一致語を `[[...]]` で強調表示します。
+
 パスだけ見たい場合:
 
 ```bash
