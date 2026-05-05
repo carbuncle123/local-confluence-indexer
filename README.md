@@ -30,6 +30,12 @@ uv run python tools/sync_confluence.py incremental --space PROJECT_A --reindex
 uv run python tools/search_docs.py "認証API refresh token" --space PROJECT_A --top-k 10
 ```
 
+## Test
+
+```bash
+uv run pytest
+```
+
 ## Security
 
 `.env`、`docs/confluence/`、`.local-confluence-sync/`、`.local-doc-index/` はコミットしないでください。
