@@ -43,8 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Confluence ページをローカル Markdown に同期します。"
     )
     parser.add_argument("--base-url")
-    parser.add_argument("--email")
-    parser.add_argument("--api-token")
+    parser.add_argument("--bearer-token")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -66,8 +65,7 @@ def build_runtime(args: argparse.Namespace) -> tuple[ConfluenceConfig, Confluenc
     config = load_config(
         space_key=args.space,
         base_url=args.base_url,
-        email=args.email,
-        api_token=args.api_token,
+        bearer_token=args.bearer_token,
     )
     return config, ConfluenceClient(config)
 

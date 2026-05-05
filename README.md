@@ -10,6 +10,7 @@ cp .env.example .env
 ```
 
 `.env` を編集して Confluence 接続情報を設定してください。
+認証は `Authorization: Bearer ...` を使う前提です。
 
 ## Full sync
 

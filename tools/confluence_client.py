@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import random
 import time
 from dataclasses import dataclass
@@ -26,8 +25,7 @@ class ConfluenceConfig:
     """Runtime configuration for Confluence sync."""
 
     base_url: str
-    email: str
-    api_token: str
+    bearer_token: str
     default_space: str | None
     docs_dir: str
     sync_dir: str
@@ -49,8 +47,7 @@ def load_config(
     *,
     space_key: str | None = None,
     base_url: str | None = None,
-    email: str | None = None,
-    api_token: str | None = None,
+    bearer_token: str | None = None,
 ) -> ConfluenceConfig:
     """Load configuration from .env and environment variables."""
 
@@ -60,8 +57,7 @@ def load_config(
 
     config = ConfluenceConfig(
         base_url=(base_url or os.getenv("CONFLUENCE_BASE_URL", "")).rstrip("/"),
-        email=email or os.getenv("CONFLUENCE_EMAIL", ""),
-        api_token=api_token or os.getenv("CONFLUENCE_API_TOKEN", ""),
+        bearer_token=bearer_token or os.getenv("CONFLUENCE_BEARER_TOKEN", ""),
         default_space=space_key or os.getenv("CONFLUENCE_DEFAULT_SPACE"),
         docs_dir=os.getenv("CONFLUENCE_DOCS_DIR", "docs/confluence"),
         sync_dir=os.getenv("CONFLUENCE_SYNC_DIR", str(DEFAULT_SYNC_DIR)),
@@ -75,19 +71,16 @@ def load_config(
 
     if not config.base_url:
         raise ValueError("CONFLUENCE_BASE_URL is required.")
-    if not config.email:
-        raise ValueError("CONFLUENCE_EMAIL is required.")
-    if not config.api_token:
-        raise ValueError("CONFLUENCE_API_TOKEN is required.")
+    if not config.bearer_token:
+        raise ValueError("CONFLUENCE_BEARER_TOKEN is required.")
 
     return config
 
 
-def build_basic_auth_header(email: str, api_token: str) -> str:
-    """Build a Basic auth header for Confluence Cloud."""
+def build_bearer_auth_header(token: str) -> str:
+    """Build a Bearer auth header for Confluence API access."""
 
-    token = base64.b64encode(f"{email}:{api_token}".encode("utf-8")).decode("ascii")
-    return f"Basic {token}"
+    return f"Bearer {token}"
 
 
 def format_cql_since(timestamp: str, overlap_minutes: int) -> str:
@@ -112,7 +105,7 @@ class ConfluenceClient:
         self.sleep_func = sleep_func
         self.session.headers.update(
             {
-                "Authorization": build_basic_auth_header(config.email, config.api_token),
+                "Authorization": build_bearer_auth_header(config.bearer_token),
                 "Accept": "application/json",
                 "User-Agent": "local-confluence-indexer/0.1.0",
             }
@@ -172,7 +165,7 @@ class ConfluenceClient:
         if response is None:
             return ConfluenceAuthenticationError("Authentication failed.")
         if response.status_code == 401:
-            message = "Confluence authentication failed. Confirm base URL, email, and API token."
+            message = "Confluence authentication failed. Confirm base URL and bearer token."
         else:
             message = "Confluence access was denied. Confirm space/page permissions."
         return ConfluenceAuthenticationError(message)
