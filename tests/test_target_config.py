@@ -51,6 +51,13 @@ targets:
         "123456",
         "--reindex",
     ]
+    assert sync_command_args(targets[1], reindex=False) == [
+        "incremental",
+        "--space",
+        "PROJECT_B",
+        "--root-page-id",
+        "123456",
+    ]
 
 
 def test_load_targets_file_requires_root_page_id_for_page_tree(tmp_path: Path) -> None:

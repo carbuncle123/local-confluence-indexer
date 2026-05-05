@@ -104,6 +104,8 @@ targets:
 scripts/run_incremental_sync.sh
 ```
 
+このスクリプトは target ごとの同期自体は `--reindex` なしで流し、最後に成功した space ごとに 1 回だけ再インデックスします。
+
 Codex CLI からの使い方は [docs/codex-cli-usage.md](/Users/takeshi/ghq/github.com/carbuncle123/local-confluence-indexer/docs/codex-cli-usage.md) を参照してください。
 
 ## Security

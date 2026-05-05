@@ -72,6 +72,8 @@ targets:
 scripts/run_incremental_sync.sh
 ```
 
+このスクリプトは target ごとの同期自体は `--reindex` なしで実行し、最後に成功した space ごとに 1 回だけ `build_doc_index.py --space ...` を実行します。したがって、同じ space に属する page tree target が複数あっても、再インデックスは原則 1 回にまとまります。
+
 コマンド引数を渡した場合は、引数の target 一覧を優先します。
 
 ```bash
@@ -196,6 +198,6 @@ uv run python tools/sync_confluence.py full --space PROJECT_B --root-page-id 123
 - `.env`、同期済み Markdown、ローカル SQLite はコミットしない
 - bearer token はログやシェル履歴に出さない
 - 大きい space では `--reindex` により space 単位でインデックスを再構築するため、時間がかかる場合がある
-- page_tree target の `--reindex` も現状は space 単位のインデックス再構築を呼ぶ設計なので、同じ space の target が多いと重複コストが出る
+- 定期更新スクリプトでは、同じ space に属する target が複数あっても再インデックスは原則 1 回にまとめる
 - 複数 target を順番に回す場合、1 つ失敗しても残りは継続し、最後に非 0 で終了する
 - まずは手動実行が安定してから定期実行に移す

@@ -70,11 +70,12 @@ def load_targets_file(path: Path) -> list[SyncTargetSpec]:
     return results
 
 
-def sync_command_args(target: SyncTargetSpec) -> list[str]:
+def sync_command_args(target: SyncTargetSpec, *, reindex: bool = True) -> list[str]:
     """Build sync_confluence.py arguments for a target."""
 
     args = ["incremental", "--space", target.space_key]
     if target.target_type == "page_tree":
         args.extend(["--root-page-id", target.root_page_id or ""])
-    args.append("--reindex")
+    if reindex:
+        args.append("--reindex")
     return args
