@@ -71,6 +71,8 @@ cron や launchd では、このスクリプトをリポジトリルートで実
 
 複数 space を定期更新したい場合は、`.env` に `CONFLUENCE_SPACES=PROJECT_A,PROJECT_B` のように設定してください。
 
+Codex CLI からの使い方は [docs/codex-cli-usage.md](/Users/takeshi/ghq/github.com/carbuncle123/local-confluence-indexer/docs/codex-cli-usage.md) を参照してください。
+
 ## Security
 
 `.env`、`docs/confluence/`、`.local-confluence-sync/`、`.local-doc-index/` はコミットしないでください。
