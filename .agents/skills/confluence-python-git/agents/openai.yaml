@@ -1,0 +1,7 @@
+interface:
+  display_name: "Confluence Python Git"
+  short_description: "この Python 同期ツールを安全に実装する"
+  default_prompt: "Use $confluence-python-git to implement or update this repository's Python sync and search tooling, and write project documents in Japanese."
+
+policy:
+  allow_implicit_invocation: true
