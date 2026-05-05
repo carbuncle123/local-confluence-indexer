@@ -1,0 +1,174 @@
+# Operations Guide
+
+このドキュメントでは、Confluence のローカル同期とインデックス更新を定期運用するための手順をまとめます。
+
+## 前提
+
+- リポジトリルートで `uv sync` が完了していること
+- `.env` に最低限次の値が設定されていること
+  - `CONFLUENCE_BASE_URL`
+  - `CONFLUENCE_BEARER_TOKEN`
+  - `CONFLUENCE_DEFAULT_SPACE`
+- 複数 space を自動更新したい場合は `CONFLUENCE_SPACES` を設定できる
+- 初回同期前に、対象 space に対する API 権限があること
+
+## 初回セットアップ
+
+```bash
+uv sync
+cp .env.example .env
+```
+
+`.env` を編集したら、まず 1 回だけ full sync を実行してください。
+
+```bash
+uv run python tools/sync_confluence.py full --space PROJECT_A --reindex
+```
+
+初回同期で確認するもの:
+
+- `docs/confluence/PROJECT_A/pages/` に Markdown が作られている
+- `docs/confluence/PROJECT_A/manifest.jsonl` が作られている
+- `docs/confluence/PROJECT_A/index.md` が作られている
+- `.local-doc-index/docs.db` が作られている
+
+## 日次・定期運用
+
+定期更新では、差分同期と再インデックスをまとめて実行します。
+
+```bash
+scripts/run_incremental_sync.sh PROJECT_A
+```
+
+第1引数を省略した場合は、`.env` の `CONFLUENCE_DEFAULT_SPACE` を使います。
+
+```bash
+scripts/run_incremental_sync.sh
+```
+
+複数 space を自動更新したい場合は、`.env` にカンマ区切りで設定します。
+
+```bash
+CONFLUENCE_SPACES=PROJECT_A,PROJECT_B,PROJECT_C
+```
+
+この状態で引数なし実行すると、指定したすべての space を順番に処理します。
+
+```bash
+scripts/run_incremental_sync.sh
+```
+
+コマンド引数を渡した場合は、引数の space 一覧を優先します。
+
+```bash
+scripts/run_incremental_sync.sh PROJECT_A PROJECT_B
+```
+
+## cron 例
+
+毎日 8:30 に差分同期を実行する例です。
+
+```cron
+30 8 * * * cd /path/to/local-confluence-indexer && /bin/bash scripts/run_incremental_sync.sh >> .local-confluence-sync/sync.log 2>> .local-confluence-sync/sync.err.log
+```
+
+ポイント:
+
+- 必ずリポジトリルートへ `cd` してから実行する
+- 標準出力と標準エラーを別ログへ分ける
+- 最初の数回は手動実行で成功することを確認してから cron に載せる
+
+## macOS launchd 例
+
+`~/Library/LaunchAgents/local.confluence.sync.project_a.plist` の例です。
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>local.confluence.sync.project_a</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>/path/to/local-confluence-indexer/scripts/run_incremental_sync.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/path/to/local-confluence-indexer</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+      <key>Hour</key>
+      <integer>8</integer>
+      <key>Minute</key>
+      <integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/path/to/local-confluence-indexer/.local-confluence-sync/sync.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/path/to/local-confluence-indexer/.local-confluence-sync/sync.err.log</string>
+  </dict>
+</plist>
+```
+
+読み込み例:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/local.confluence.sync.project_a.plist 2>/dev/null || true
+launchctl load ~/Library/LaunchAgents/local.confluence.sync.project_a.plist
+```
+
+## ログ確認
+
+ログファイル:
+
+- `.local-confluence-sync/sync.log`
+- `.local-confluence-sync/sync.err.log`
+
+最近の実行状況を確認する例:
+
+```bash
+tail -n 100 .local-confluence-sync/sync.log
+tail -n 100 .local-confluence-sync/sync.err.log
+```
+
+## 手動復旧の基本手順
+
+1. まず同じコマンドを手動で再実行する
+
+```bash
+scripts/run_incremental_sync.sh PROJECT_A
+```
+
+2. 認証エラーなら `.env` の `CONFLUENCE_BASE_URL` と `CONFLUENCE_BEARER_TOKEN` を見直す
+3. 特定の space だけ落ちる場合は、その space を引数指定して単体実行する
+
+```bash
+scripts/run_incremental_sync.sh PROJECT_A
+```
+
+4. 変換や index 周りだけ怪しい場合は、再インデックスだけを手動実行する
+
+```bash
+uv run python tools/build_doc_index.py --space PROJECT_A
+```
+
+5. 増分同期の状態が怪しい場合は、明示的に full sync をやり直す
+
+```bash
+uv run python tools/sync_confluence.py full --space PROJECT_A --reindex
+```
+
+## 運用上の注意
+
+- `.env`、同期済み Markdown、ローカル SQLite はコミットしない
+- bearer token はログやシェル履歴に出さない
+- 大きい space では `--reindex` により space 単位でインデックスを再構築するため、時間がかかる場合がある
+- 複数 space を順番に回す場合、1 つ失敗しても残りは継続し、最後に非 0 で終了する
+- まずは手動実行が安定してから定期実行に移す
