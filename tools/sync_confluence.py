@@ -12,10 +12,13 @@ from typing import Any
 
 from confluence_client import ConfluenceClient, ConfluenceConfig, format_cql_since, load_config
 from db import (
+    PageTargetRecord,
     PageRecord,
     SpaceRecord,
     SyncErrorRecord,
     SyncRunRecord,
+    build_page_tree_target_key,
+    build_target_record,
     connect_state_db,
     create_sync_run,
     get_page,
@@ -24,12 +27,15 @@ from db import (
     has_failed_pages,
     increment_sync_run_counter,
     initialize_state_db,
+    list_page_targets_for_target,
     list_pages_for_space,
     record_sync_completed,
     record_sync_error,
     record_sync_started,
+    replace_page_targets_for_target,
     upsert_page,
     upsert_space,
+    upsert_sync_target,
     complete_sync_run,
 )
 from markdown_converter import convert_page_to_markdown, extract_labels, slugify
@@ -50,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     for command in ("full", "incremental", "page"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--space", help="Confluence space key")
+        subparser.add_argument("--root-page-id", help="配下ページを同期する root page id")
         subparser.add_argument("--reindex", action="store_true")
         subparser.add_argument("--dry-run", action="store_true")
         subparser.add_argument("--force", action="store_true")
@@ -91,6 +98,30 @@ def docs_space_dir(config: ConfluenceConfig, space_key: str) -> Path:
 
 def raw_space_dir(config: ConfluenceConfig, space_key: str) -> Path:
     return Path(config.sync_dir) / "raw" / space_key
+
+
+def target_slug(target_type: str, root_page_id: str | None = None) -> str:
+    """Build a filesystem-friendly slug for a sync target."""
+
+    if target_type == "page_tree":
+        if not root_page_id:
+            raise ValueError("root_page_id is required for page_tree targets.")
+        return f"page-tree--{root_page_id}"
+    return "space"
+
+
+def target_dir(
+    config: ConfluenceConfig,
+    *,
+    space_key: str,
+    target_type: str,
+    root_page_id: str | None = None,
+) -> Path:
+    """Return the manifest/index directory for a sync target."""
+
+    if target_type == "space":
+        return docs_space_dir(config, space_key)
+    return docs_space_dir(config, space_key) / "targets" / target_slug(target_type, root_page_id)
 
 
 def save_raw_page(config: ConfluenceConfig, space_key: str, page: dict[str, Any]) -> dict[str, str]:
@@ -167,14 +198,57 @@ def page_record_from_payload(
     )
 
 
-def regenerate_manifest(config: ConfluenceConfig, state_connection: Any, space_key: str) -> None:
-    """Regenerate manifest.jsonl for a space."""
+def list_target_pages(
+    state_connection: Any,
+    *,
+    space_key: str,
+    target_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Load pages for either a whole-space target or a page-tree target."""
+
+    pages_by_id = {
+        page["page_id"]: page
+        for page in list_pages_for_space(state_connection, space_key)
+    }
+    if not target_key:
+        return list(pages_by_id.values())
+
+    memberships = list_page_targets_for_target(
+        state_connection,
+        target_key,
+        included_only=True,
+    )
+    return [
+        pages_by_id[membership["page_id"]]
+        for membership in memberships
+        if membership["page_id"] in pages_by_id
+    ]
+
+
+def regenerate_manifest(
+    config: ConfluenceConfig,
+    state_connection: Any,
+    *,
+    space_key: str,
+    target_type: str = "space",
+    target_key: str | None = None,
+    root_page_id: str | None = None,
+) -> None:
+    """Regenerate manifest.jsonl for a sync target."""
 
     pages = sorted(
-        list_pages_for_space(state_connection, space_key),
+        list_target_pages(state_connection, space_key=space_key, target_key=target_key),
         key=lambda item: (item["space_key"], item["title"], item["page_id"]),
     )
-    manifest_path = ensure_parent_directory(docs_space_dir(config, space_key) / "manifest.jsonl")
+    manifest_path = ensure_parent_directory(
+        target_dir(
+            config,
+            space_key=space_key,
+            target_type=target_type,
+            root_page_id=root_page_id,
+        )
+        / "manifest.jsonl"
+    )
     lines: list[str] = []
     for page in pages:
         labels = json.loads(page["labels_json"]) if page.get("labels_json") else []
@@ -197,10 +271,19 @@ def regenerate_manifest(config: ConfluenceConfig, state_connection: Any, space_k
     atomic_write_text(manifest_path, "\n".join(lines) + ("\n" if lines else ""))
 
 
-def regenerate_index_markdown(config: ConfluenceConfig, state_connection: Any, space_key: str) -> None:
-    """Regenerate index.md for a space."""
+def regenerate_index_markdown(
+    config: ConfluenceConfig,
+    state_connection: Any,
+    *,
+    space_key: str,
+    target_type: str = "space",
+    target_key: str | None = None,
+    root_page_id: str | None = None,
+    root_title: str | None = None,
+) -> None:
+    """Regenerate index.md for a sync target."""
 
-    pages = list_pages_for_space(state_connection, space_key)
+    pages = list_target_pages(state_connection, space_key=space_key, target_key=target_key)
     if pages:
         space_id = pages[0]["space_id"]
     else:
@@ -213,6 +296,7 @@ def regenerate_index_markdown(config: ConfluenceConfig, state_connection: Any, s
         "",
         f"- Space key: {space_key}",
         f"- Space id: {space_id}",
+        f"- Target type: {target_type}",
         f"- Exported at: {updated_at}",
         f"- Pages: {len(pages)}",
         "- Manifest: ./manifest.jsonl",
@@ -227,6 +311,12 @@ def regenerate_index_markdown(config: ConfluenceConfig, state_connection: Any, s
         "|---|---|---:|---|---|",
     ]
 
+    if root_page_id:
+        lines[6:6] = [
+            f"- Root page id: {root_page_id}",
+            f"- Root title: {root_title or ''}",
+        ]
+
     for page in sorted(pages, key=lambda item: (item["title"], item["page_id"])):
         labels = ", ".join(json.loads(page["labels_json"])) if page.get("labels_json") else ""
         path = Path(page["local_path"])
@@ -235,7 +325,15 @@ def regenerate_index_markdown(config: ConfluenceConfig, state_connection: Any, s
             f"| {page['title']} | {relative_path.as_posix()} | {page['version_number']} | {page['version_created_at'] or ''} | {labels} |"
         )
 
-    index_path = ensure_parent_directory(docs_space_dir(config, space_key) / "index.md")
+    index_path = ensure_parent_directory(
+        target_dir(
+            config,
+            space_key=space_key,
+            target_type=target_type,
+            root_page_id=root_page_id,
+        )
+        / "index.md"
+    )
     atomic_write_text(index_path, "\n".join(lines) + "\n")
 
 
@@ -257,6 +355,55 @@ def extract_page_id_from_search_result(candidate: dict[str, Any]) -> str | None:
         return str(content["id"])
     result_id = candidate.get("id")
     return str(result_id) if result_id else None
+
+
+def register_sync_target(
+    state_connection: Any,
+    *,
+    space_key: str,
+    space_id: str,
+    target_type: str,
+    root_page_id: str | None = None,
+    name: str | None = None,
+    metadata_json: str | None = None,
+) -> str:
+    """Upsert and return a sync target key."""
+
+    target_record = build_target_record(
+        space_key=space_key,
+        space_id=space_id,
+        target_type=target_type,
+        root_page_id=root_page_id,
+        name=name,
+        metadata_json=metadata_json,
+    )
+    upsert_sync_target(state_connection, target_record)
+    return target_record.target_key
+
+
+def sync_page_tree_memberships(
+    state_connection: Any,
+    *,
+    target_key: str,
+    space_key: str,
+    page_ids: list[str],
+    synced_at: str,
+) -> None:
+    """Replace page memberships for a page-tree target."""
+
+    replace_page_targets_for_target(
+        state_connection,
+        target_key,
+        [
+            PageTargetRecord(
+                target_key=target_key,
+                page_id=page_id,
+                space_key=space_key,
+                last_seen_at=synced_at,
+            )
+            for page_id in page_ids
+        ],
+    )
 
 
 def sync_single_page(
@@ -303,10 +450,11 @@ def run_full_sync(
     client: ConfluenceClient,
     config: ConfluenceConfig,
     space_key: str,
+    root_page_id: str | None,
     force: bool,
     reindex: bool,
 ) -> int:
-    """Run a full sync for a space."""
+    """Run a full sync for either a space or a page tree."""
 
     with connect_state_db() as state_connection:
         initialize_state_db(state_connection)
@@ -314,18 +462,39 @@ def run_full_sync(
         started_at = now_iso()
         space = client.get_space_by_key(space_key)
         space_id = str(space["id"])
+        target_type = "page_tree" if root_page_id else "space"
+        target_name = None
+        target_key = register_sync_target(
+            state_connection,
+            space_key=space_key,
+            space_id=space_id,
+            target_type=target_type,
+            root_page_id=root_page_id,
+            metadata_json=json_dumps(space),
+        )
 
         create_sync_run(
             state_connection,
             SyncRunRecord(
                 run_id=run_id,
+                target_key=target_key,
+                target_type=target_type,
                 space_key=space_key,
+                root_page_id=root_page_id,
                 mode="full",
                 started_at=started_at,
                 status="running",
             ),
         )
-        record_sync_started(state_connection, space_key, space_id, started_at)
+        record_sync_started(
+            state_connection,
+            space_key,
+            space_id,
+            started_at,
+            target_key=target_key,
+            target_type=target_type,
+            root_page_id=root_page_id,
+        )
         upsert_space(
             state_connection,
             SpaceRecord(
@@ -338,13 +507,28 @@ def run_full_sync(
         )
 
         try:
-            summaries = client.list_pages_in_space(
-                space_key=space_key,
-                status="current",
-                body_format="storage",
-            )
+            if root_page_id:
+                root_page = client.get_page_detail(
+                    root_page_id,
+                    body_format="storage",
+                    include_labels=True,
+                    include_version=True,
+                )
+                root_page["space_key"] = space_key
+                target_name = root_page.get("title")
+                summaries = [{"id": root_page_id}, *client.list_descendant_pages(root_page_id, space_key=space_key)]
+            else:
+                summaries = client.list_pages_in_space(
+                    space_key=space_key,
+                    status="current",
+                    body_format="storage",
+                )
+
+            synced_page_ids: list[str] = []
             for summary in summaries:
                 page_id = str(summary["id"])
+                if page_id not in synced_page_ids:
+                    synced_page_ids.append(page_id)
                 try:
                     sync_single_page(
                         client=client,
@@ -360,7 +544,10 @@ def run_full_sync(
                         state_connection,
                         SyncErrorRecord(
                             run_id=run_id,
+                            target_key=target_key,
+                            target_type=target_type,
                             space_key=space_key,
+                            root_page_id=root_page_id,
                             page_id=page_id,
                             operation="sync_page",
                             error_type=type(exc).__name__,
@@ -370,8 +557,32 @@ def run_full_sync(
                     )
                     increment_sync_run_counter(state_connection, run_id, "failed_pages")
 
-            regenerate_manifest(config, state_connection, space_key)
-            regenerate_index_markdown(config, state_connection, space_key)
+            if root_page_id:
+                sync_page_tree_memberships(
+                    state_connection,
+                    target_key=target_key,
+                    space_key=space_key,
+                    page_ids=synced_page_ids,
+                    synced_at=now_iso(),
+                )
+
+            regenerate_manifest(
+                config,
+                state_connection,
+                space_key=space_key,
+                target_type=target_type,
+                target_key=target_key if root_page_id else None,
+                root_page_id=root_page_id,
+            )
+            regenerate_index_markdown(
+                config,
+                state_connection,
+                space_key=space_key,
+                target_type=target_type,
+                target_key=target_key if root_page_id else None,
+                root_page_id=root_page_id,
+                root_title=target_name,
+            )
 
             if has_failed_pages(state_connection, run_id):
                 complete_sync_run(state_connection, run_id, status="partial_failed")
@@ -381,6 +592,9 @@ def run_full_sync(
                     space_id,
                     completed_at=now_iso(),
                     last_error="One or more pages failed during sync.",
+                    target_key=target_key,
+                    target_type=target_type,
+                    root_page_id=root_page_id,
                 )
             else:
                 complete_sync_run(state_connection, run_id, status="success")
@@ -390,8 +604,11 @@ def run_full_sync(
                     space_id,
                     completed_at=now_iso(),
                     success_at=started_at,
+                    target_key=target_key,
+                    target_type=target_type,
+                    root_page_id=root_page_id,
                 )
-                if reindex:
+                if reindex and not root_page_id:
                     maybe_reindex(config, space_key)
             return 0
         except Exception as exc:
@@ -399,7 +616,10 @@ def run_full_sync(
                 state_connection,
                 SyncErrorRecord(
                     run_id=run_id,
+                    target_key=target_key,
+                    target_type=target_type,
                     space_key=space_key,
+                    root_page_id=root_page_id,
                     operation="full_sync",
                     error_type=type(exc).__name__,
                     error_message=str(exc),
@@ -413,6 +633,9 @@ def run_full_sync(
                 space_id,
                 completed_at=now_iso(),
                 last_error=str(exc),
+                target_key=target_key,
+                target_type=target_type,
+                root_page_id=root_page_id,
             )
             raise
 
@@ -439,6 +662,7 @@ def run_incremental_sync(
                 client=client,
                 config=config,
                 space_key=space_key,
+                root_page_id=None,
                 force=force,
                 reindex=reindex,
             )
@@ -599,10 +823,13 @@ def main() -> int:
             client=client,
             config=config,
             space_key=space_key,
+            root_page_id=args.root_page_id,
             force=args.force,
             reindex=args.reindex,
         )
     if args.command == "incremental":
+        if args.root_page_id:
+            raise ValueError("incremental の page_tree 対応はまだ未実装です。まず full を使ってください。")
         return run_incremental_sync(
             client=client,
             config=config,
@@ -611,6 +838,8 @@ def main() -> int:
             reindex=args.reindex,
             dry_run=args.dry_run,
         )
+    if args.root_page_id:
+        raise ValueError("page コマンドでは --root-page-id は使えません。")
     return run_page_sync(
         client=client,
         config=config,

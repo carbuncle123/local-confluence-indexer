@@ -259,6 +259,24 @@ class ConfluenceClient:
         url = f"{self.config.base_url}/rest/api/content/search"
         return self._paginate(url, params={"cql": cql, "limit": 25})
 
+    def list_descendant_pages(
+        self,
+        root_page_id: str,
+        *,
+        space_key: str,
+    ) -> list[dict[str, Any]]:
+        """List descendant page summaries for a root page."""
+
+        url = f"{self.config.base_url}/rest/api/content/{root_page_id}/descendant/page"
+        results = self._paginate(
+            url,
+            params={
+                "expand": "version",
+                "limit": 100,
+            },
+        )
+        return [self._normalize_content_summary(item, space_key=space_key) for item in results]
+
     def _normalize_space(self, payload: dict[str, Any]) -> dict[str, Any]:
         homepage = payload.get("homepage") or {}
         return {
