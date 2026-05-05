@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 from dotenv import load_dotenv
@@ -203,32 +203,30 @@ class ConfluenceClient:
     def get_space_by_key(self, space_key: str) -> dict[str, Any]:
         """Resolve a Confluence space by key."""
 
-        url = f"{self.config.base_url}/wiki/api/v2/spaces"
-        payload = self._request_json(url, params={"keys": space_key, "limit": 25})
-        for result in payload.get("results", []):
-            if result.get("key") == space_key:
-                return result
-        raise ConfluenceClientError(f"Space not found: {space_key}")
+        url = f"{self.config.base_url}/wiki/rest/api/space/{space_key}"
+        payload = self._request_json(url, params={"expand": "homepage"})
+        return self._normalize_space(payload)
 
     def list_pages_in_space(
         self,
         *,
-        space_id: str,
+        space_key: str,
         status: str = "current",
         body_format: str = "storage",
     ) -> list[dict[str, Any]]:
         """List page summaries for a space."""
 
-        url = f"{self.config.base_url}/wiki/api/v2/pages"
-        return self._paginate(
+        del body_format
+        url = f"{self.config.base_url}/wiki/rest/api/space/{space_key}/content/page"
+        results = self._paginate(
             url,
             params={
-                "space-id": space_id,
                 "status": status,
-                "body-format": body_format,
+                "expand": "version",
                 "limit": 100,
             },
         )
+        return [self._normalize_content_summary(item, space_key=space_key) for item in results]
 
     def get_page_detail(
         self,
@@ -240,15 +238,23 @@ class ConfluenceClient:
     ) -> dict[str, Any]:
         """Fetch a page detail payload."""
 
-        url = f"{self.config.base_url}/wiki/api/v2/pages/{page_id}"
-        return self._request_json(
+        del body_format, include_labels, include_version
+        url = f"{self.config.base_url}/wiki/rest/api/content/{page_id}"
+        payload = self._request_json(
             url,
             params={
-                "body-format": body_format,
-                "include-labels": str(include_labels).lower(),
-                "include-version": str(include_version).lower(),
+                "expand": ",".join(
+                    [
+                        "body.storage",
+                        "version",
+                        "metadata.labels",
+                        "space",
+                        "history",
+                    ]
+                )
             },
         )
+        return self._normalize_content(payload)
 
     def search_updated_pages_by_cql(self, space_key: str, since: str) -> list[dict[str, Any]]:
         """Search updated pages using the legacy CQL endpoint."""
@@ -257,5 +263,73 @@ class ConfluenceClient:
             f'space = "{space_key}" and type = page and '
             f'lastmodified >= "{since}" order by lastmodified asc'
         )
-        url = f"{self.config.base_url}/wiki/rest/api/search"
+        url = f"{self.config.base_url}/wiki/rest/api/content/search"
         return self._paginate(url, params={"cql": cql, "limit": 25})
+
+    def _normalize_space(self, payload: dict[str, Any]) -> dict[str, Any]:
+        homepage = payload.get("homepage") or {}
+        return {
+            "id": str(payload.get("id", "")),
+            "key": payload.get("key"),
+            "name": payload.get("name"),
+            "homepageId": str(homepage.get("id")) if homepage.get("id") is not None else None,
+            "_links": payload.get("_links", {}),
+        }
+
+    def _normalize_content_summary(
+        self,
+        payload: dict[str, Any],
+        *,
+        space_key: str,
+    ) -> dict[str, Any]:
+        version = payload.get("version") or {}
+        return {
+            "id": str(payload.get("id", "")),
+            "title": payload.get("title"),
+            "status": payload.get("status"),
+            "space_key": space_key,
+            "version": {
+                "number": version.get("number"),
+            },
+        }
+
+    def _normalize_content(self, payload: dict[str, Any]) -> dict[str, Any]:
+        version = payload.get("version") or {}
+        history = payload.get("history") or {}
+        created_by = history.get("createdBy") or {}
+        space = payload.get("space") or {}
+        metadata = payload.get("metadata") or {}
+        labels = metadata.get("labels") or {}
+        links = payload.get("_links") or {}
+
+        return {
+            "id": str(payload.get("id", "")),
+            "type": payload.get("type"),
+            "status": payload.get("status"),
+            "title": payload.get("title"),
+            "spaceId": str(space.get("id", "")) if space.get("id") is not None else "",
+            "space_key": space.get("key"),
+            "parentId": None,
+            "authorId": created_by.get("accountId"),
+            "ownerId": created_by.get("accountId"),
+            "createdAt": history.get("createdDate"),
+            "version": {
+                "number": version.get("number"),
+                "createdAt": version.get("when"),
+                "message": version.get("message"),
+                "minorEdit": version.get("minorEdit"),
+                "authorId": (version.get("by") or {}).get("accountId"),
+            },
+            "body": {
+                "storage": {
+                    "value": ((payload.get("body") or {}).get("storage") or {}).get("value", "")
+                }
+            },
+            "labels": {
+                "results": labels.get("results", []),
+            },
+            "_links": {
+                "base": links.get("base") or self.config.base_url,
+                "webui": links.get("webui"),
+            },
+        }

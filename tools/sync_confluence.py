@@ -340,7 +340,11 @@ def run_full_sync(
         )
 
         try:
-            summaries = client.list_pages_in_space(space_id=space_id, status="current", body_format="storage")
+            summaries = client.list_pages_in_space(
+                space_key=space_key,
+                status="current",
+                body_format="storage",
+            )
             for summary in summaries:
                 page_id = str(summary["id"])
                 try:
