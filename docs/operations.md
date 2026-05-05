@@ -9,7 +9,7 @@
   - `CONFLUENCE_BASE_URL`
   - `CONFLUENCE_BEARER_TOKEN`
   - `CONFLUENCE_DEFAULT_SPACE`
-- 複数 space を自動更新したい場合は `CONFLUENCE_SPACES` を設定できる
+- 複数 target を定期更新したい場合は `confluence_targets.yaml` を用意できる
 - 初回同期前に、対象 space に対する API 権限があること
 
 ## 初回セットアップ
@@ -25,6 +25,12 @@ cp .env.example .env
 uv run python tools/sync_confluence.py full --space PROJECT_A --reindex
 ```
 
+page tree を対象にする場合:
+
+```bash
+uv run python tools/sync_confluence.py full --space PROJECT_B --root-page-id 123456
+```
+
 初回同期で確認するもの:
 
 - `docs/confluence/PROJECT_A/pages/` に Markdown が作られている
@@ -37,7 +43,7 @@ uv run python tools/sync_confluence.py full --space PROJECT_A --reindex
 定期更新では、差分同期と再インデックスをまとめて実行します。
 
 ```bash
-scripts/run_incremental_sync.sh PROJECT_A
+scripts/run_incremental_sync.sh space:PROJECT_A
 ```
 
 第1引数を省略した場合は、`.env` の `CONFLUENCE_DEFAULT_SPACE` を使います。
@@ -46,22 +52,30 @@ scripts/run_incremental_sync.sh PROJECT_A
 scripts/run_incremental_sync.sh
 ```
 
-複数 space を自動更新したい場合は、`.env` にカンマ区切りで設定します。
+複数 target を自動更新したい場合は、リポジトリルートに `confluence_targets.yaml` を置きます。
 
-```bash
-CONFLUENCE_SPACES=PROJECT_A,PROJECT_B,PROJECT_C
+```yaml
+targets:
+  - type: space
+    space_key: PROJECT_A
+  - type: page_tree
+    space_key: PROJECT_B
+    root_page_id: "123456"
+    name: 認証関連ページ
 ```
 
-この状態で引数なし実行すると、指定したすべての space を順番に処理します。
+サンプルは [confluence_targets.example.yaml](/Users/takeshi/ghq/github.com/carbuncle123/local-confluence-indexer/confluence_targets.example.yaml) にあります。
+
+この状態で引数なし実行すると、指定したすべての target を順番に処理します。
 
 ```bash
 scripts/run_incremental_sync.sh
 ```
 
-コマンド引数を渡した場合は、引数の space 一覧を優先します。
+コマンド引数を渡した場合は、引数の target 一覧を優先します。
 
 ```bash
-scripts/run_incremental_sync.sh PROJECT_A PROJECT_B
+scripts/run_incremental_sync.sh space:PROJECT_A page_tree:PROJECT_B:123456
 ```
 
 ## cron 例
@@ -147,10 +161,16 @@ scripts/run_incremental_sync.sh PROJECT_A
 ```
 
 2. 認証エラーなら `.env` の `CONFLUENCE_BASE_URL` と `CONFLUENCE_BEARER_TOKEN` を見直す
-3. 特定の space だけ落ちる場合は、その space を引数指定して単体実行する
+3. 特定の target だけ落ちる場合は、その target を引数指定して単体実行する
 
 ```bash
-scripts/run_incremental_sync.sh PROJECT_A
+scripts/run_incremental_sync.sh space:PROJECT_A
+```
+
+page tree の場合:
+
+```bash
+scripts/run_incremental_sync.sh page_tree:PROJECT_B:123456
 ```
 
 4. 変換や index 周りだけ怪しい場合は、再インデックスだけを手動実行する
@@ -170,5 +190,6 @@ uv run python tools/sync_confluence.py full --space PROJECT_A --reindex
 - `.env`、同期済み Markdown、ローカル SQLite はコミットしない
 - bearer token はログやシェル履歴に出さない
 - 大きい space では `--reindex` により space 単位でインデックスを再構築するため、時間がかかる場合がある
-- 複数 space を順番に回す場合、1 つ失敗しても残りは継続し、最後に非 0 で終了する
+- page_tree target の `--reindex` も現状は space 単位のインデックス再構築を呼ぶ設計なので、同じ space の target が多いと重複コストが出る
+- 複数 target を順番に回す場合、1 つ失敗しても残りは継続し、最後に非 0 で終了する
 - まずは手動実行が安定してから定期実行に移す
