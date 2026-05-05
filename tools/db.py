@@ -10,6 +10,31 @@ from typing import Any
 from utils import DEFAULT_INDEX_DB_PATH, DEFAULT_SYNC_DB_PATH, ensure_parent_directory, now_iso
 
 
+SYNC_TARGETS_TABLE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sync_targets (
+  target_key TEXT PRIMARY KEY,
+  target_type TEXT NOT NULL,
+  space_key TEXT NOT NULL,
+  space_id TEXT NOT NULL,
+  root_page_id TEXT,
+  name TEXT,
+  last_resolved_at TEXT NOT NULL,
+  metadata_json TEXT
+);
+"""
+
+PAGE_TARGETS_TABLE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS page_targets (
+  target_key TEXT NOT NULL,
+  page_id TEXT NOT NULL,
+  space_key TEXT NOT NULL,
+  included INTEGER NOT NULL DEFAULT 1,
+  last_seen_at TEXT NOT NULL,
+  metadata_json TEXT,
+  PRIMARY KEY (target_key, page_id)
+);
+"""
+
 STATE_DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS spaces (
   space_key TEXT PRIMARY KEY,
@@ -49,7 +74,10 @@ CREATE TABLE IF NOT EXISTS pages (
 );
 
 CREATE TABLE IF NOT EXISTS sync_state (
-  space_key TEXT PRIMARY KEY,
+  target_key TEXT PRIMARY KEY,
+  target_type TEXT NOT NULL,
+  root_page_id TEXT,
+  space_key TEXT NOT NULL,
   space_id TEXT NOT NULL,
   last_successful_sync_at TEXT,
   last_started_at TEXT,
@@ -60,6 +88,9 @@ CREATE TABLE IF NOT EXISTS sync_state (
 
 CREATE TABLE IF NOT EXISTS sync_runs (
   run_id TEXT PRIMARY KEY,
+  target_key TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  root_page_id TEXT,
   space_key TEXT NOT NULL,
   mode TEXT NOT NULL,
   started_at TEXT NOT NULL,
@@ -75,6 +106,9 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 CREATE TABLE IF NOT EXISTS sync_errors (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id TEXT NOT NULL,
+  target_key TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  root_page_id TEXT,
   space_key TEXT NOT NULL,
   page_id TEXT,
   operation TEXT NOT NULL,
@@ -177,12 +211,41 @@ class PageRecord:
 
 
 @dataclass(slots=True)
+class SyncTargetRecord:
+    """A row in the sync_targets table."""
+
+    target_key: str
+    target_type: str
+    space_key: str
+    space_id: str
+    root_page_id: str | None = None
+    name: str | None = None
+    last_resolved_at: str | None = None
+    metadata_json: str | None = None
+
+
+@dataclass(slots=True)
+class PageTargetRecord:
+    """A row in the page_targets table."""
+
+    target_key: str
+    page_id: str
+    space_key: str
+    last_seen_at: str
+    included: int = 1
+    metadata_json: str | None = None
+
+
+@dataclass(slots=True)
 class SyncStateRecord:
     """A row in the sync_state table."""
 
     space_key: str
     space_id: str
     updated_at: str
+    target_key: str | None = None
+    target_type: str = "space"
+    root_page_id: str | None = None
     last_successful_sync_at: str | None = None
     last_started_at: str | None = None
     last_completed_at: str | None = None
@@ -198,6 +261,9 @@ class SyncRunRecord:
     mode: str
     started_at: str
     status: str
+    target_key: str | None = None
+    target_type: str = "space"
+    root_page_id: str | None = None
     completed_at: str | None = None
     fetched_pages: int = 0
     updated_pages: int = 0
@@ -215,6 +281,9 @@ class SyncErrorRecord:
     operation: str
     error_message: str
     created_at: str
+    target_key: str | None = None
+    target_type: str = "space"
+    root_page_id: str | None = None
     page_id: str | None = None
     error_type: str | None = None
 
@@ -259,6 +328,20 @@ class ChunkRecord:
     token_count: int | None = None
     labels_json: str | None = None
     metadata_json: str | None = None
+
+
+def build_space_target_key(space_key: str) -> str:
+    """Build a stable target key for a whole-space sync target."""
+
+    return f"space:{space_key}"
+
+
+def build_page_tree_target_key(space_key: str, root_page_id: str) -> str:
+    """Build a stable target key for a page-tree sync target."""
+
+    return f"page_tree:{space_key}:{root_page_id}"
+
+
 def _connect(path: Path) -> sqlite3.Connection:
     ensure_parent_directory(path)
     connection = sqlite3.connect(path)
@@ -279,10 +362,160 @@ def connect_index_db(path: Path = DEFAULT_INDEX_DB_PATH) -> sqlite3.Connection:
     return _connect(path)
 
 
+def table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    """Return whether a SQLite table exists."""
+
+    row = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def list_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+    """Return the set of columns defined on a table."""
+
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row["name"] for row in rows}
+
+
+def ensure_column(
+    connection: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_definition: str,
+) -> None:
+    """Add a missing column to an existing table."""
+
+    if column_name in list_columns(connection, table_name):
+        return
+    connection.execute(
+        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+    )
+
+
+def migrate_sync_state_table(connection: sqlite3.Connection) -> None:
+    """Upgrade sync_state to use target_key as the primary key."""
+
+    if not table_exists(connection, "sync_state"):
+        return
+
+    columns = list_columns(connection, "sync_state")
+    if "target_key" in columns and "target_type" in columns and "root_page_id" in columns:
+        return
+
+    connection.execute("ALTER TABLE sync_state RENAME TO sync_state_legacy")
+    connection.execute(
+        """
+        CREATE TABLE sync_state (
+          target_key TEXT PRIMARY KEY,
+          target_type TEXT NOT NULL,
+          root_page_id TEXT,
+          space_key TEXT NOT NULL,
+          space_id TEXT NOT NULL,
+          last_successful_sync_at TEXT,
+          last_started_at TEXT,
+          last_completed_at TEXT,
+          last_error TEXT,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO sync_state (
+          target_key, target_type, root_page_id, space_key, space_id,
+          last_successful_sync_at, last_started_at, last_completed_at, last_error, updated_at
+        )
+        SELECT
+          'space:' || space_key,
+          'space',
+          NULL,
+          space_key,
+          space_id,
+          last_successful_sync_at,
+          last_started_at,
+          last_completed_at,
+          last_error,
+          updated_at
+        FROM sync_state_legacy
+        """
+    )
+    connection.execute("DROP TABLE sync_state_legacy")
+
+
+def migrate_state_db(connection: sqlite3.Connection) -> None:
+    """Apply additive schema migrations for the sync state database."""
+
+    connection.executescript(SYNC_TARGETS_TABLE_SCHEMA)
+    connection.executescript(PAGE_TARGETS_TABLE_SCHEMA)
+    migrate_sync_state_table(connection)
+
+    for column_name, definition in (
+        ("target_key", "TEXT"),
+        ("target_type", "TEXT"),
+        ("root_page_id", "TEXT"),
+    ):
+        ensure_column(connection, "sync_runs", column_name, definition)
+        ensure_column(connection, "sync_errors", column_name, definition)
+
+    connection.execute(
+        """
+        UPDATE sync_runs
+        SET target_key = COALESCE(target_key, 'space:' || space_key),
+            target_type = COALESCE(target_type, 'space')
+        """
+    )
+    connection.execute(
+        """
+        UPDATE sync_errors
+        SET target_key = COALESCE(target_key, 'space:' || space_key),
+            target_type = COALESCE(target_type, 'space')
+        """
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO sync_targets (
+          target_key, target_type, space_key, space_id, root_page_id, name,
+          last_resolved_at, metadata_json
+        )
+        SELECT
+          'space:' || space_key,
+          'space',
+          space_key,
+          space_id,
+          NULL,
+          name,
+          last_resolved_at,
+          metadata_json
+        FROM spaces
+        """
+    )
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO sync_targets (
+          target_key, target_type, space_key, space_id, root_page_id, name,
+          last_resolved_at, metadata_json
+        )
+        SELECT
+          target_key,
+          target_type,
+          space_key,
+          space_id,
+          root_page_id,
+          NULL,
+          updated_at,
+          NULL
+        FROM sync_state
+        """
+    )
+
+
 def initialize_state_db(connection: sqlite3.Connection) -> None:
     """Create the sync-state schema."""
 
     connection.executescript(STATE_DB_SCHEMA)
+    migrate_state_db(connection)
     connection.commit()
 
 
@@ -347,6 +580,162 @@ def get_space(connection: sqlite3.Connection, space_key: str) -> dict[str, Any] 
         (space_key,),
     ).fetchone()
     return row_to_dict(row)
+
+
+def build_target_record(
+    *,
+    space_key: str,
+    space_id: str,
+    target_key: str | None = None,
+    target_type: str = "space",
+    root_page_id: str | None = None,
+    name: str | None = None,
+    metadata_json: str | None = None,
+) -> SyncTargetRecord:
+    """Create a sync target record with sensible defaults."""
+
+    resolved_target_key = target_key
+    if resolved_target_key is None:
+        if target_type == "page_tree":
+            if not root_page_id:
+                raise ValueError("root_page_id is required for page_tree targets.")
+            resolved_target_key = build_page_tree_target_key(space_key, root_page_id)
+        else:
+            resolved_target_key = build_space_target_key(space_key)
+
+    return SyncTargetRecord(
+        target_key=resolved_target_key,
+        target_type=target_type,
+        space_key=space_key,
+        space_id=space_id,
+        root_page_id=root_page_id,
+        name=name,
+        last_resolved_at=now_iso(),
+        metadata_json=metadata_json,
+    )
+
+
+def upsert_sync_target(connection: sqlite3.Connection, record: SyncTargetRecord) -> None:
+    """Insert or update a sync target row."""
+
+    payload = asdict(record)
+    if payload["last_resolved_at"] is None:
+        payload["last_resolved_at"] = now_iso()
+
+    connection.execute(
+        """
+        INSERT INTO sync_targets (
+          target_key, target_type, space_key, space_id, root_page_id, name,
+          last_resolved_at, metadata_json
+        ) VALUES (
+          :target_key, :target_type, :space_key, :space_id, :root_page_id, :name,
+          :last_resolved_at, :metadata_json
+        )
+        ON CONFLICT(target_key) DO UPDATE SET
+          target_type = excluded.target_type,
+          space_key = excluded.space_key,
+          space_id = excluded.space_id,
+          root_page_id = excluded.root_page_id,
+          name = excluded.name,
+          last_resolved_at = excluded.last_resolved_at,
+          metadata_json = excluded.metadata_json
+        """,
+        payload,
+    )
+    connection.commit()
+
+
+def get_sync_target(connection: sqlite3.Connection, target_key: str) -> dict[str, Any] | None:
+    """Load a sync target row."""
+
+    row = connection.execute(
+        "SELECT * FROM sync_targets WHERE target_key = ?",
+        (target_key,),
+    ).fetchone()
+    return row_to_dict(row)
+
+
+def list_sync_targets_for_space(
+    connection: sqlite3.Connection,
+    space_key: str,
+) -> list[dict[str, Any]]:
+    """Load all sync targets for a space."""
+
+    rows = connection.execute(
+        """
+        SELECT * FROM sync_targets
+        WHERE space_key = ?
+        ORDER BY target_type ASC, target_key ASC
+        """,
+        (space_key,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def upsert_page_target(connection: sqlite3.Connection, record: PageTargetRecord) -> None:
+    """Insert or update a page membership row for a sync target."""
+
+    connection.execute(
+        """
+        INSERT INTO page_targets (
+          target_key, page_id, space_key, included, last_seen_at, metadata_json
+        ) VALUES (
+          :target_key, :page_id, :space_key, :included, :last_seen_at, :metadata_json
+        )
+        ON CONFLICT(target_key, page_id) DO UPDATE SET
+          space_key = excluded.space_key,
+          included = excluded.included,
+          last_seen_at = excluded.last_seen_at,
+          metadata_json = excluded.metadata_json
+        """,
+        asdict(record),
+    )
+    connection.commit()
+
+
+def list_page_targets_for_target(
+    connection: sqlite3.Connection,
+    target_key: str,
+    *,
+    included_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Load page membership rows for a sync target."""
+
+    where_clause = "WHERE target_key = ?"
+    parameters: list[Any] = [target_key]
+    if included_only:
+        where_clause += " AND included = 1"
+    rows = connection.execute(
+        f"""
+        SELECT * FROM page_targets
+        {where_clause}
+        ORDER BY page_id ASC
+        """,
+        parameters,
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def replace_page_targets_for_target(
+    connection: sqlite3.Connection,
+    target_key: str,
+    records: list[PageTargetRecord],
+) -> None:
+    """Replace all page memberships for a target."""
+
+    connection.execute("DELETE FROM page_targets WHERE target_key = ?", (target_key,))
+    for record in records:
+        connection.execute(
+            """
+            INSERT INTO page_targets (
+              target_key, page_id, space_key, included, last_seen_at, metadata_json
+            ) VALUES (
+              :target_key, :page_id, :space_key, :included, :last_seen_at, :metadata_json
+            )
+            """,
+            asdict(record),
+        )
+    connection.commit()
 
 
 def upsert_page(connection: sqlite3.Connection, record: PageRecord) -> None:
@@ -442,37 +831,85 @@ def mark_page_deleted_or_missing(
     connection.commit()
 
 
+def resolve_target_identity(
+    *,
+    space_key: str,
+    target_key: str | None = None,
+    target_type: str | None = None,
+    root_page_id: str | None = None,
+) -> tuple[str, str]:
+    """Resolve a compatible target key/type pair."""
+
+    if target_key:
+        resolved_type = target_type or (
+            "page_tree" if target_key.startswith("page_tree:") else "space"
+        )
+        return target_key, resolved_type
+
+    if target_type == "page_tree":
+        if not root_page_id:
+            raise ValueError("root_page_id is required for page_tree targets.")
+        return build_page_tree_target_key(space_key, root_page_id), "page_tree"
+
+    return build_space_target_key(space_key), target_type or "space"
+
+
 def upsert_sync_state(connection: sqlite3.Connection, record: SyncStateRecord) -> None:
-    """Insert or update the sync state for a space."""
+    """Insert or update the sync state for a target."""
+
+    payload = asdict(record)
+    payload["target_key"], payload["target_type"] = resolve_target_identity(
+        space_key=payload["space_key"],
+        target_key=payload["target_key"],
+        target_type=payload["target_type"],
+        root_page_id=payload["root_page_id"],
+    )
 
     connection.execute(
         """
         INSERT INTO sync_state (
-          space_key, space_id, last_successful_sync_at, last_started_at,
-          last_completed_at, last_error, updated_at
+          target_key, target_type, root_page_id, space_key, space_id,
+          last_successful_sync_at, last_started_at, last_completed_at, last_error, updated_at
         ) VALUES (
-          :space_key, :space_id, :last_successful_sync_at, :last_started_at,
-          :last_completed_at, :last_error, :updated_at
+          :target_key, :target_type, :root_page_id, :space_key, :space_id,
+          :last_successful_sync_at, :last_started_at, :last_completed_at, :last_error, :updated_at
         )
-        ON CONFLICT(space_key) DO UPDATE SET
+        ON CONFLICT(target_key) DO UPDATE SET
+          target_type = excluded.target_type,
+          root_page_id = excluded.root_page_id,
           space_id = excluded.space_id,
+          space_key = excluded.space_key,
           last_successful_sync_at = excluded.last_successful_sync_at,
           last_started_at = excluded.last_started_at,
           last_completed_at = excluded.last_completed_at,
           last_error = excluded.last_error,
           updated_at = excluded.updated_at
         """,
-        asdict(record),
+        payload,
     )
     connection.commit()
 
 
-def get_sync_state(connection: sqlite3.Connection, space_key: str) -> dict[str, Any] | None:
-    """Load sync state for a space."""
+def get_sync_state(
+    connection: sqlite3.Connection,
+    space_key: str,
+    *,
+    target_key: str | None = None,
+    target_type: str | None = None,
+    root_page_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Load sync state for a target."""
+
+    resolved_target_key, _ = resolve_target_identity(
+        space_key=space_key,
+        target_key=target_key,
+        target_type=target_type,
+        root_page_id=root_page_id,
+    )
 
     row = connection.execute(
-        "SELECT * FROM sync_state WHERE space_key = ?",
-        (space_key,),
+        "SELECT * FROM sync_state WHERE target_key = ?",
+        (resolved_target_key,),
     ).fetchone()
     return row_to_dict(row)
 
@@ -482,13 +919,26 @@ def record_sync_started(
     space_key: str,
     space_id: str,
     started_at: str | None = None,
+    *,
+    target_key: str | None = None,
+    target_type: str | None = None,
+    root_page_id: str | None = None,
 ) -> None:
     """Update sync_state when a run starts."""
 
-    current = get_sync_state(connection, space_key)
+    resolved_target_key, resolved_target_type = resolve_target_identity(
+        space_key=space_key,
+        target_key=target_key,
+        target_type=target_type,
+        root_page_id=root_page_id,
+    )
+    current = get_sync_state(connection, space_key, target_key=resolved_target_key)
     record = SyncStateRecord(
+        target_key=resolved_target_key,
+        target_type=resolved_target_type,
         space_key=space_key,
         space_id=space_id,
+        root_page_id=root_page_id,
         last_successful_sync_at=current["last_successful_sync_at"] if current else None,
         last_started_at=started_at or now_iso(),
         last_completed_at=current["last_completed_at"] if current else None,
@@ -505,13 +955,26 @@ def record_sync_completed(
     completed_at: str | None = None,
     success_at: str | None = None,
     last_error: str | None = None,
+    *,
+    target_key: str | None = None,
+    target_type: str | None = None,
+    root_page_id: str | None = None,
 ) -> None:
     """Update sync_state when a run completes."""
 
-    current = get_sync_state(connection, space_key)
+    resolved_target_key, resolved_target_type = resolve_target_identity(
+        space_key=space_key,
+        target_key=target_key,
+        target_type=target_type,
+        root_page_id=root_page_id,
+    )
+    current = get_sync_state(connection, space_key, target_key=resolved_target_key)
     record = SyncStateRecord(
+        target_key=resolved_target_key,
+        target_type=resolved_target_type,
         space_key=space_key,
         space_id=space_id,
+        root_page_id=root_page_id,
         last_successful_sync_at=success_at or (
             current["last_successful_sync_at"] if current else None
         ),
@@ -526,17 +989,27 @@ def record_sync_completed(
 def create_sync_run(connection: sqlite3.Connection, record: SyncRunRecord) -> None:
     """Insert a new sync run row."""
 
+    payload = asdict(record)
+    payload["target_key"], payload["target_type"] = resolve_target_identity(
+        space_key=payload["space_key"],
+        target_key=payload["target_key"],
+        target_type=payload["target_type"],
+        root_page_id=payload["root_page_id"],
+    )
+
     connection.execute(
         """
         INSERT INTO sync_runs (
-          run_id, space_key, mode, started_at, completed_at, fetched_pages,
-          updated_pages, skipped_pages, failed_pages, status, error_message
+          run_id, target_key, target_type, root_page_id, space_key, mode, started_at,
+          completed_at, fetched_pages, updated_pages, skipped_pages, failed_pages,
+          status, error_message
         ) VALUES (
-          :run_id, :space_key, :mode, :started_at, :completed_at, :fetched_pages,
-          :updated_pages, :skipped_pages, :failed_pages, :status, :error_message
+          :run_id, :target_key, :target_type, :root_page_id, :space_key, :mode, :started_at,
+          :completed_at, :fetched_pages, :updated_pages, :skipped_pages, :failed_pages,
+          :status, :error_message
         )
         """,
-        asdict(record),
+        payload,
     )
     connection.commit()
 
@@ -604,15 +1077,25 @@ def has_failed_pages(connection: sqlite3.Connection, run_id: str) -> bool:
 def record_sync_error(connection: sqlite3.Connection, record: SyncErrorRecord) -> None:
     """Insert a sync error row."""
 
+    payload = asdict(record)
+    payload["target_key"], payload["target_type"] = resolve_target_identity(
+        space_key=payload["space_key"],
+        target_key=payload["target_key"],
+        target_type=payload["target_type"],
+        root_page_id=payload["root_page_id"],
+    )
+
     connection.execute(
         """
         INSERT INTO sync_errors (
-          run_id, space_key, page_id, operation, error_type, error_message, created_at
+          run_id, target_key, target_type, root_page_id, space_key, page_id,
+          operation, error_type, error_message, created_at
         ) VALUES (
-          :run_id, :space_key, :page_id, :operation, :error_type, :error_message, :created_at
+          :run_id, :target_key, :target_type, :root_page_id, :space_key, :page_id,
+          :operation, :error_type, :error_message, :created_at
         )
         """,
-        asdict(record),
+        payload,
     )
     connection.commit()
 
