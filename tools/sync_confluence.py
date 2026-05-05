@@ -406,6 +406,32 @@ def sync_page_tree_memberships(
     )
 
 
+def page_tree_sync_page_ids(
+    client: ConfluenceClient,
+    *,
+    space_key: str,
+    root_page_id: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Fetch the root page and current descendant membership for a page-tree target."""
+
+    root_page = client.get_page_detail(
+        root_page_id,
+        body_format="storage",
+        include_labels=True,
+        include_version=True,
+    )
+    root_page["space_key"] = space_key
+    descendant_summaries = client.list_descendant_pages(root_page_id, space_key=space_key)
+
+    page_ids = [root_page_id]
+    for summary in descendant_summaries:
+        page_id = str(summary["id"])
+        if page_id not in page_ids:
+            page_ids.append(page_id)
+
+    return root_page, page_ids
+
+
 def sync_single_page(
     *,
     client: ConfluenceClient,
@@ -508,15 +534,13 @@ def run_full_sync(
 
         try:
             if root_page_id:
-                root_page = client.get_page_detail(
-                    root_page_id,
-                    body_format="storage",
-                    include_labels=True,
-                    include_version=True,
+                root_page, page_ids = page_tree_sync_page_ids(
+                    client,
+                    space_key=space_key,
+                    root_page_id=root_page_id,
                 )
-                root_page["space_key"] = space_key
                 target_name = root_page.get("title")
-                summaries = [{"id": root_page_id}, *client.list_descendant_pages(root_page_id, space_key=space_key)]
+                summaries = [{"id": page_id} for page_id in page_ids]
             else:
                 summaries = client.list_pages_in_space(
                     space_key=space_key,
@@ -645,6 +669,7 @@ def run_incremental_sync(
     client: ConfluenceClient,
     config: ConfluenceConfig,
     space_key: str,
+    root_page_id: str | None,
     force: bool,
     reindex: bool,
     dry_run: bool,
@@ -653,7 +678,13 @@ def run_incremental_sync(
 
     with connect_state_db() as state_connection:
         initialize_state_db(state_connection)
-        state = get_sync_state(state_connection, space_key)
+        target_type = "page_tree" if root_page_id else "space"
+        state = get_sync_state(
+            state_connection,
+            space_key,
+            target_type=target_type,
+            root_page_id=root_page_id,
+        )
         if not state or not state.get("last_successful_sync_at"):
             if dry_run:
                 print("No previous sync. full sync is required.")
@@ -662,7 +693,7 @@ def run_incremental_sync(
                 client=client,
                 config=config,
                 space_key=space_key,
-                root_page_id=None,
+                root_page_id=root_page_id,
                 force=force,
                 reindex=reindex,
             )
@@ -675,27 +706,62 @@ def run_incremental_sync(
         else:
             remote_space = client.get_space_by_key(space_key)
             space_id = str(remote_space["id"])
+        target_key = register_sync_target(
+            state_connection,
+            space_key=space_key,
+            space_id=space_id,
+            target_type=target_type,
+            root_page_id=root_page_id,
+        )
 
         create_sync_run(
             state_connection,
             SyncRunRecord(
                 run_id=run_id,
+                target_key=target_key,
+                target_type=target_type,
                 space_key=space_key,
+                root_page_id=root_page_id,
                 mode="incremental",
                 started_at=started_at,
                 status="running",
             ),
         )
-        record_sync_started(state_connection, space_key, space_id, started_at)
+        record_sync_started(
+            state_connection,
+            space_key,
+            space_id,
+            started_at,
+            target_key=target_key,
+            target_type=target_type,
+            root_page_id=root_page_id,
+        )
 
         since = format_cql_since(
             state["last_successful_sync_at"],
             config.incremental_overlap_minutes,
         )
-        candidates = client.search_updated_pages_by_cql(space_key, since)
+        root_title: str | None = None
+        current_tree_page_ids: list[str] | None = None
+        if root_page_id:
+            root_page, current_tree_page_ids = page_tree_sync_page_ids(
+                client,
+                space_key=space_key,
+                root_page_id=root_page_id,
+            )
+            root_title = root_page.get("title")
+            candidates = client.search_updated_pages_in_page_tree(
+                space_key=space_key,
+                root_page_id=root_page_id,
+                since=since,
+            )
+        else:
+            candidates = client.search_updated_pages_by_cql(space_key, since)
 
         if dry_run:
             print(json.dumps(candidates, ensure_ascii=False, indent=2))
+            if root_page_id and current_tree_page_ids is not None:
+                print(json.dumps({"page_tree_memberships": current_tree_page_ids}, ensure_ascii=False, indent=2))
             complete_sync_run(state_connection, run_id, status="dry_run")
             return 0
 
@@ -720,7 +786,10 @@ def run_incremental_sync(
                     state_connection,
                     SyncErrorRecord(
                         run_id=run_id,
+                        target_key=target_key,
+                        target_type=target_type,
                         space_key=space_key,
+                        root_page_id=root_page_id,
                         page_id=page_id,
                         operation="sync_page",
                         error_type=type(exc).__name__,
@@ -730,8 +799,32 @@ def run_incremental_sync(
                 )
                 increment_sync_run_counter(state_connection, run_id, "failed_pages")
 
-        regenerate_manifest(config, state_connection, space_key)
-        regenerate_index_markdown(config, state_connection, space_key)
+        if root_page_id and current_tree_page_ids is not None:
+            sync_page_tree_memberships(
+                state_connection,
+                target_key=target_key,
+                space_key=space_key,
+                page_ids=current_tree_page_ids,
+                synced_at=now_iso(),
+            )
+
+        regenerate_manifest(
+            config,
+            state_connection,
+            space_key=space_key,
+            target_type=target_type,
+            target_key=target_key if root_page_id else None,
+            root_page_id=root_page_id,
+        )
+        regenerate_index_markdown(
+            config,
+            state_connection,
+            space_key=space_key,
+            target_type=target_type,
+            target_key=target_key if root_page_id else None,
+            root_page_id=root_page_id,
+            root_title=root_title,
+        )
 
         if has_failed_pages(state_connection, run_id):
             complete_sync_run(state_connection, run_id, status="partial_failed")
@@ -741,6 +834,9 @@ def run_incremental_sync(
                 space_id,
                 completed_at=now_iso(),
                 last_error="One or more pages failed during sync.",
+                target_key=target_key,
+                target_type=target_type,
+                root_page_id=root_page_id,
             )
         else:
             complete_sync_run(state_connection, run_id, status="success")
@@ -750,8 +846,11 @@ def run_incremental_sync(
                 space_id,
                 completed_at=now_iso(),
                 success_at=started_at,
+                target_key=target_key,
+                target_type=target_type,
+                root_page_id=root_page_id,
             )
-            if reindex:
+            if reindex and not root_page_id:
                 maybe_reindex(config, space_key)
         return 0
 
@@ -828,12 +927,11 @@ def main() -> int:
             reindex=args.reindex,
         )
     if args.command == "incremental":
-        if args.root_page_id:
-            raise ValueError("incremental の page_tree 対応はまだ未実装です。まず full を使ってください。")
         return run_incremental_sync(
             client=client,
             config=config,
             space_key=space_key,
+            root_page_id=args.root_page_id,
             force=args.force,
             reindex=args.reindex,
             dry_run=args.dry_run,

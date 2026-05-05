@@ -249,6 +249,12 @@ class ConfluenceClient:
         )
         return self._normalize_content(payload)
 
+    def search_pages_by_cql(self, cql: str) -> list[dict[str, Any]]:
+        """Search pages using the legacy CQL endpoint."""
+
+        url = f"{self.config.base_url}/rest/api/content/search"
+        return self._paginate(url, params={"cql": cql, "limit": 25})
+
     def search_updated_pages_by_cql(self, space_key: str, since: str) -> list[dict[str, Any]]:
         """Search updated pages using the legacy CQL endpoint."""
 
@@ -256,8 +262,23 @@ class ConfluenceClient:
             f'space = "{space_key}" and type = page and '
             f'lastmodified >= "{since}" order by lastmodified asc'
         )
-        url = f"{self.config.base_url}/rest/api/content/search"
-        return self._paginate(url, params={"cql": cql, "limit": 25})
+        return self.search_pages_by_cql(cql)
+
+    def search_updated_pages_in_page_tree(
+        self,
+        *,
+        space_key: str,
+        root_page_id: str,
+        since: str,
+    ) -> list[dict[str, Any]]:
+        """Search updated pages under a page-tree target, including the root page."""
+
+        cql = (
+            f'space = "{space_key}" and type = page and '
+            f'(ancestor = {root_page_id} or id = {root_page_id}) and '
+            f'lastmodified >= "{since}" order by lastmodified asc'
+        )
+        return self.search_pages_by_cql(cql)
 
     def list_descendant_pages(
         self,
