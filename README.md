@@ -59,10 +59,11 @@ uv run pytest
 差分同期と再インデックスの定期実行例:
 
 ```bash
-uv run python tools/sync_confluence.py incremental --space PROJECT_A --reindex
+scripts/run_incremental_sync.sh PROJECT_A
 ```
 
-cron や launchd では、このコマンドをリポジトリルートで実行してください。
+cron や launchd では、このスクリプトをリポジトリルートで実行してください。
+詳しい運用手順は [docs/operations.md](/Users/takeshi/ghq/github.com/carbuncle123/local-confluence-indexer/docs/operations.md) を参照してください。
 
 ## Security
 
