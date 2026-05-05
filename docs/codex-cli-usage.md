@@ -139,6 +139,8 @@ uv run python tools/search_docs.py "Webhook 認証" --space PROJECT_B --top-k 10
 sed -n '1,120p' docs/confluence/PROJECT_B/targets/page-tree--123456/index.md
 ```
 
+そのうえで通常の `search_docs.py` を使い、必要なら対象 path を絞って読みます。
+
 検索結果自体を page tree target に絞りたい場合は `--root-page-id` を付けます。
 
 ```bash
