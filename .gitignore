@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local Confluence sync artifacts
+docs/confluence/
+.local-confluence-sync/
+.local-doc-index/
