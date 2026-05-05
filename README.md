@@ -18,6 +18,10 @@ cp .env.example .env
 - `CONFLUENCE_BEARER_TOKEN`
 - `CONFLUENCE_DEFAULT_SPACE`
 
+複数 space を自動更新したい場合:
+
+- `CONFLUENCE_SPACES`
+
 ## Full sync
 
 ```bash
@@ -64,6 +68,8 @@ scripts/run_incremental_sync.sh PROJECT_A
 
 cron や launchd では、このスクリプトをリポジトリルートで実行してください。
 詳しい運用手順は [docs/operations.md](/Users/takeshi/ghq/github.com/carbuncle123/local-confluence-indexer/docs/operations.md) を参照してください。
+
+複数 space を定期更新したい場合は、`.env` に `CONFLUENCE_SPACES=PROJECT_A,PROJECT_B` のように設定してください。
 
 ## Security
 
