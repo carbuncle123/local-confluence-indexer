@@ -7,10 +7,11 @@ import json
 import subprocess
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from db import connect_index_db
-from utils import DEFAULT_INDEX_DB_PATH
+from db import build_page_tree_target_key, connect_index_db, connect_state_db, list_page_targets_for_target
+from utils import DEFAULT_INDEX_DB_PATH, DEFAULT_SYNC_DB_PATH
 
 
 DEFAULT_TOP_K = 10
@@ -48,12 +49,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("query", help="検索クエリ")
     parser.add_argument("--space", help="対象の Confluence space key")
+    parser.add_argument("--root-page-id", help="page_tree target に絞る root page id")
     parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K, help="返却件数")
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument("--include-draft", action="store_true")
     parser.add_argument("--path-only", action="store_true")
     parser.add_argument("--open", action="store_true", dest="open_result")
     return parser
+
+
+def resolve_allowed_page_ids(
+    *,
+    state_db_path: Path,
+    space_key: str | None,
+    root_page_id: str | None,
+) -> set[str] | None:
+    """Resolve allowed page ids for a page-tree target filter."""
+
+    if not root_page_id:
+        return None
+    if not space_key:
+        raise ValueError("--root-page-id を使う場合は --space が必要です。")
+
+    target_key = build_page_tree_target_key(space_key, root_page_id)
+    with connect_state_db(state_db_path) as connection:
+        rows = list_page_targets_for_target(connection, target_key, included_only=True)
+    return {row["page_id"] for row in rows}
 
 
 def build_match_query(query: str) -> str:
@@ -105,6 +126,7 @@ def query_results(
     *,
     query: str,
     space_key: str | None,
+    allowed_page_ids: set[str] | None,
     top_k: int,
     include_draft: bool,
 ) -> list[SearchResult]:
@@ -115,6 +137,7 @@ def query_results(
     sql = """
         SELECT
           c.chunk_id,
+          c.page_id,
           c.path,
           c.title,
           c.headings,
@@ -151,6 +174,8 @@ def query_results(
 
     results: list[SearchResult] = []
     for row in rows:
+        if allowed_page_ids is not None and row["page_id"] not in allowed_page_ids:
+            continue
         labels = json.loads(row["labels_json"]) if row["labels_json"] else []
         if should_exclude_result(row["title"], labels, include_draft):
             continue
@@ -188,7 +213,13 @@ def excerpt_from_body(body: str, limit: int = 240) -> str:
     return compact[:limit]
 
 
-def render_markdown(results: list[SearchResult], query: str, space_key: str | None, top_k: int) -> str:
+def render_markdown(
+    results: list[SearchResult],
+    query: str,
+    space_key: str | None,
+    root_page_id: str | None,
+    top_k: int,
+) -> str:
     """Render search results in Markdown format."""
 
     lines = [
@@ -196,6 +227,7 @@ def render_markdown(results: list[SearchResult], query: str, space_key: str | No
         "",
         f"Query: {query}  ",
         f"Space: {space_key or 'ALL'}  ",
+        f"Root Page: {root_page_id or 'ALL'}  ",
         f"Top K: {top_k}",
         "",
     ]
@@ -263,12 +295,18 @@ def main() -> int:
 
     parser = build_parser()
     args = parser.parse_args()
+    allowed_page_ids = resolve_allowed_page_ids(
+        state_db_path=DEFAULT_SYNC_DB_PATH,
+        space_key=args.space,
+        root_page_id=args.root_page_id,
+    )
 
     with connect_index_db(DEFAULT_INDEX_DB_PATH) as connection:
         results = query_results(
             connection,
             query=args.query,
             space_key=args.space,
+            allowed_page_ids=allowed_page_ids,
             top_k=args.top_k,
             include_draft=args.include_draft,
         )
@@ -285,7 +323,7 @@ def main() -> int:
         print(render_json(results))
         return 0
 
-    print(render_markdown(results, args.query, args.space, args.top_k))
+    print(render_markdown(results, args.query, args.space, args.root_page_id, args.top_k))
     return 0
 
 

@@ -1,6 +1,6 @@
 # Local Confluence Sync and Search
 
-Confluence Cloud の指定スペースをローカル Markdown として同期し、SQLite FTS5 で検索できるようにするためのツール群です。
+Confluence Cloud の指定スペースまたは特定ページ配下をローカル Markdown として同期し、SQLite FTS5 で検索できるようにするためのツール群です。
 
 ## Setup
 
@@ -50,6 +50,12 @@ uv run python tools/sync_confluence.py incremental --space PROJECT_B --root-page
 
 ```bash
 uv run python tools/search_docs.py "認証API refresh token" --space PROJECT_A --top-k 10
+```
+
+特定 page 配下の target に絞って検索したい場合:
+
+```bash
+uv run python tools/search_docs.py "認証API refresh token" --space PROJECT_B --root-page-id 123456 --top-k 10
 ```
 
 パスだけ見たい場合:
