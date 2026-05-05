@@ -40,7 +40,7 @@ uv run python tools/sync_confluence.py full --space PROJECT_A --reindex
 scripts/run_incremental_sync.sh PROJECT_A
 ```
 
-第1引数を省略した場合は、`.env` の `CONFLUENCE_DEFAULT_SPACE` を使います。
+第1引数を省略した場合は、`confluence_targets.yaml` があればそれを使い、なければ `.env` の `CONFLUENCE_DEFAULT_SPACE` を使います。
 
 ```bash
 scripts/run_incremental_sync.sh
@@ -143,7 +143,7 @@ tail -n 100 .local-confluence-sync/sync.err.log
 1. まず同じコマンドを手動で再実行する
 
 ```bash
-scripts/run_incremental_sync.sh PROJECT_A
+scripts/run_incremental_sync.sh space:PROJECT_A
 ```
 
 2. 認証エラーなら `.env` の `CONFLUENCE_BASE_URL` と `CONFLUENCE_BEARER_TOKEN` を見直す
@@ -163,6 +163,12 @@ uv run python tools/build_doc_index.py --space PROJECT_A
 
 ```bash
 uv run python tools/sync_confluence.py full --space PROJECT_A --reindex
+```
+
+page tree の場合:
+
+```bash
+uv run python tools/sync_confluence.py full --space PROJECT_B --root-page-id 123456
 ```
 
 ## 運用上の注意

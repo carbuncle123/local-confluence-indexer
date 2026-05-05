@@ -2,8 +2,19 @@ from __future__ import annotations
 
 import json
 
-from db import ChunkRecord, DocumentRecord, connect_index_db, initialize_index_db, replace_chunks_for_document, upsert_document
-from search_docs import build_match_query, query_results, render_json
+from db import (
+    ChunkRecord,
+    DocumentRecord,
+    PageTargetRecord,
+    connect_index_db,
+    connect_state_db,
+    initialize_index_db,
+    initialize_state_db,
+    replace_chunks_for_document,
+    replace_page_targets_for_target,
+    upsert_document,
+)
+from search_docs import build_match_query, query_results, render_json, resolve_allowed_page_ids
 
 
 def prepare_index(tmp_path):
@@ -64,6 +75,25 @@ def prepare_index(tmp_path):
     return db_path
 
 
+def prepare_state(tmp_path):
+    state_db = tmp_path / "state.db"
+    with connect_state_db(state_db) as connection:
+        initialize_state_db(connection)
+        replace_page_targets_for_target(
+            connection,
+            "page_tree:PROJECT_A:100",
+            [
+                PageTargetRecord(
+                    target_key="page_tree:PROJECT_A:100",
+                    page_id="123",
+                    space_key="PROJECT_A",
+                    last_seen_at="2026-05-05T02:00:00+00:00",
+                )
+            ],
+        )
+    return state_db
+
+
 def test_build_match_query_quotes_each_token() -> None:
     assert build_match_query("refresh token") == '"refresh" OR "token"'
 
@@ -75,6 +105,7 @@ def test_query_results_filters_draft_and_returns_best_match(tmp_path) -> None:
             connection,
             query="refresh token",
             space_key="PROJECT_A",
+            allowed_page_ids=None,
             top_k=5,
             include_draft=False,
         )
@@ -91,9 +122,37 @@ def test_render_json_contains_line_range(tmp_path) -> None:
             connection,
             query="refresh token",
             space_key="PROJECT_A",
+            allowed_page_ids=None,
             top_k=5,
             include_draft=False,
         )
 
     payload = json.loads(render_json(results))
     assert payload[0]["line_range"] == "20-22"
+
+
+def test_query_results_can_filter_by_allowed_page_ids(tmp_path) -> None:
+    db_path = prepare_index(tmp_path)
+    with connect_index_db(db_path) as connection:
+        results = query_results(
+            connection,
+            query="refresh token",
+            space_key="PROJECT_A",
+            allowed_page_ids={"999"},
+            top_k=5,
+            include_draft=False,
+        )
+
+    assert results == []
+
+
+def test_resolve_allowed_page_ids_for_page_tree(tmp_path) -> None:
+    state_db = prepare_state(tmp_path)
+
+    allowed = resolve_allowed_page_ids(
+        state_db_path=state_db,
+        space_key="PROJECT_A",
+        root_page_id="100",
+    )
+
+    assert allowed == {"123"}
