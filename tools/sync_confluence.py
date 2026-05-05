@@ -33,7 +33,7 @@ from db import (
     complete_sync_run,
 )
 from markdown_converter import convert_page_to_markdown, extract_labels, slugify
-from utils import ensure_parent_directory, json_dumps, now_iso
+from utils import atomic_write_text, ensure_parent_directory, json_dumps, now_iso
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -101,9 +101,9 @@ def save_raw_page(config: ConfluenceConfig, space_key: str, page: dict[str, Any]
     json_path = ensure_parent_directory(raw_dir / f"{page_id}.page.json")
     html_path = ensure_parent_directory(raw_dir / f"{page_id}.storage.html")
 
-    json_path.write_text(json.dumps(page, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(json_path, json.dumps(page, ensure_ascii=False, indent=2) + "\n")
     storage_html = page.get("body", {}).get("storage", {}).get("value", "")
-    html_path.write_text(storage_html, encoding="utf-8")
+    atomic_write_text(html_path, storage_html)
 
     return {"raw_json_path": str(json_path), "raw_storage_path": str(html_path)}
 
@@ -115,7 +115,7 @@ def write_markdown(config: ConfluenceConfig, space_key: str, page: dict[str, Any
     output_path = ensure_parent_directory(
         docs_space_dir(config, space_key) / "pages" / f"{page['id']}__{slug}.md"
     )
-    output_path.write_text(markdown, encoding="utf-8")
+    atomic_write_text(output_path, markdown)
     return str(output_path)
 
 
@@ -194,7 +194,7 @@ def regenerate_manifest(config: ConfluenceConfig, state_connection: Any, space_k
             "include_in_index": True,
         }
         lines.append(json.dumps(line, ensure_ascii=False))
-    manifest_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    atomic_write_text(manifest_path, "\n".join(lines) + ("\n" if lines else ""))
 
 
 def regenerate_index_markdown(config: ConfluenceConfig, state_connection: Any, space_key: str) -> None:
@@ -236,7 +236,7 @@ def regenerate_index_markdown(config: ConfluenceConfig, state_connection: Any, s
         )
 
     index_path = ensure_parent_directory(docs_space_dir(config, space_key) / "index.md")
-    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(index_path, "\n".join(lines) + "\n")
 
 
 def maybe_reindex(config: ConfluenceConfig, space_key: str) -> None:

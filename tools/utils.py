@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -50,4 +51,14 @@ def ensure_parent_directory(path: Path) -> Path:
     """Create the parent directory for a file path and return the file path."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Path:
+    """Atomically write a text file via a temporary sibling path."""
+
+    ensure_parent_directory(path)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(content, encoding=encoding)
+    os.replace(temp_path, path)
     return path

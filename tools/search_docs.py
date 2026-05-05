@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
@@ -51,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument("--include-draft", action="store_true")
     parser.add_argument("--path-only", action="store_true")
+    parser.add_argument("--open", action="store_true", dest="open_result")
     return parser
 
 
@@ -275,6 +277,9 @@ def main() -> int:
         for result in results:
             print(result.path)
         return 0
+
+    if args.open_result and results:
+        subprocess.run(["open", results[0].path], check=False)
 
     if args.as_json:
         print(render_json(results))
