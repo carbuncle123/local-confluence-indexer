@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -260,16 +259,6 @@ class ChunkRecord:
     token_count: int | None = None
     labels_json: str | None = None
     metadata_json: str | None = None
-
-
-def json_dumps(data: Any | None) -> str | None:
-    """Serialize arbitrary JSON-compatible data."""
-
-    if data is None:
-        return None
-    return json.dumps(data, ensure_ascii=False, sort_keys=True)
-
-
 def _connect(path: Path) -> sqlite3.Connection:
     ensure_parent_directory(path)
     connection = sqlite3.connect(path)

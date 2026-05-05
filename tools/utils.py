@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 PHASE1_NOT_IMPLEMENTED_MESSAGE = (
@@ -21,6 +23,14 @@ def phase1_placeholder(name: str) -> str:
     """Return a consistent placeholder message for Phase 1 commands."""
 
     return f"{name}: {PHASE1_NOT_IMPLEMENTED_MESSAGE}"
+
+
+def json_dumps(data: Any | None) -> str | None:
+    """Serialize arbitrary JSON-compatible data."""
+
+    if data is None:
+        return None
+    return json.dumps(data, ensure_ascii=False, sort_keys=True)
 
 
 def now_iso() -> str:
