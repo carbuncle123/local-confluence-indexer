@@ -7,45 +7,38 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${REPO_ROOT}"
 
-run_for_space() {
-  local space_key="$1"
-  echo "[sync] start ${space_key}"
-  uv run python tools/sync_confluence.py incremental --space "${space_key}" --reindex
-  echo "[sync] done ${space_key}"
+run_for_target() {
+  local target_type="$1"
+  local space_key="$2"
+  local root_page_id="${3:-}"
+
+  if [[ "${target_type}" == "page_tree" ]]; then
+    echo "[sync] start page_tree:${space_key}:${root_page_id}"
+    uv run python tools/sync_confluence.py incremental --space "${space_key}" --root-page-id "${root_page_id}" --reindex
+    echo "[sync] done page_tree:${space_key}:${root_page_id}"
+  else
+    echo "[sync] start space:${space_key}"
+    uv run python tools/sync_confluence.py incremental --space "${space_key}" --reindex
+    echo "[sync] done space:${space_key}"
+  fi
 }
 
-resolve_spaces() {
-  local -a spaces=()
-
-  if [[ "$#" -gt 0 ]]; then
-    spaces=("$@")
-  elif [[ -n "${CONFLUENCE_SPACES:-}" ]]; then
-    IFS=',' read -r -a spaces <<< "${CONFLUENCE_SPACES}"
-  elif [[ -n "${CONFLUENCE_DEFAULT_SPACE:-}" ]]; then
-    spaces=("${CONFLUENCE_DEFAULT_SPACE}")
-  else
-    echo "SPACE_KEY が未指定です。引数、CONFLUENCE_SPACES、または CONFLUENCE_DEFAULT_SPACE を設定してください。" >&2
-    exit 1
-  fi
-
-  for i in "${!spaces[@]}"; do
-    spaces[$i]="$(echo "${spaces[$i]}" | xargs)"
-  done
-
-  printf '%s\n' "${spaces[@]}"
+resolve_targets() {
+  UV_CACHE_DIR=.uv-cache uv run python tools/resolve_sync_targets.py "$@"
 }
 
 mkdir -p .local-confluence-sync
 
-mapfile -t SPACE_KEYS < <(resolve_spaces "$@")
+mapfile -t TARGET_ROWS < <(resolve_targets "$@")
 
 failed=0
-for space_key in "${SPACE_KEYS[@]}"; do
-  if [[ -z "${space_key}" ]]; then
+for row in "${TARGET_ROWS[@]}"; do
+  if [[ -z "${row}" ]]; then
     continue
   fi
-  if ! run_for_space "${space_key}"; then
-    echo "[sync] failed ${space_key}" >&2
+  IFS=$'\t' read -r target_type space_key root_page_id <<< "${row}"
+  if ! run_for_target "${target_type}" "${space_key}" "${root_page_id}"; then
+    echo "[sync] failed ${target_type}:${space_key}:${root_page_id}" >&2
     failed=1
   fi
 done

@@ -1,0 +1,9 @@
+targets:
+  - type: space
+    space_key: PROJECT_A
+    name: 全体同期
+
+  - type: page_tree
+    space_key: PROJECT_B
+    root_page_id: "123456"
+    name: 認証関連ページ

@@ -18,9 +18,9 @@ cp .env.example .env
 - `CONFLUENCE_BEARER_TOKEN`
 - `CONFLUENCE_DEFAULT_SPACE`
 
-複数 space を自動更新したい場合:
+定期更新で target 設定ファイルを切り替えたい場合:
 
-- `CONFLUENCE_SPACES`
+- `CONFLUENCE_TARGETS_FILE`
 
 ## Full sync
 
@@ -28,10 +28,22 @@ cp .env.example .env
 uv run python tools/sync_confluence.py full --space PROJECT_A --reindex
 ```
 
+特定 page 配下だけを同期したい場合:
+
+```bash
+uv run python tools/sync_confluence.py full --space PROJECT_B --root-page-id 123456
+```
+
 ## Incremental sync
 
 ```bash
 uv run python tools/sync_confluence.py incremental --space PROJECT_A --reindex
+```
+
+特定 page 配下を差分同期したい場合:
+
+```bash
+uv run python tools/sync_confluence.py incremental --space PROJECT_B --root-page-id 123456
 ```
 
 ## Search
@@ -63,13 +75,28 @@ uv run pytest
 差分同期と再インデックスの定期実行例:
 
 ```bash
-scripts/run_incremental_sync.sh PROJECT_A
+scripts/run_incremental_sync.sh space:PROJECT_A
 ```
 
 cron や launchd では、このスクリプトをリポジトリルートで実行してください。
 詳しい運用手順は [docs/operations.md](/Users/takeshi/ghq/github.com/carbuncle123/local-confluence-indexer/docs/operations.md) を参照してください。
 
-複数 space を定期更新したい場合は、`.env` に `CONFLUENCE_SPACES=PROJECT_A,PROJECT_B` のように設定してください。
+複数 target を定期更新したい場合は、[confluence_targets.example.yaml](/Users/takeshi/ghq/github.com/carbuncle123/local-confluence-indexer/confluence_targets.example.yaml) を参考に `confluence_targets.yaml` を作成してください。
+
+```yaml
+targets:
+  - type: space
+    space_key: PROJECT_A
+  - type: page_tree
+    space_key: PROJECT_B
+    root_page_id: "123456"
+```
+
+この状態で引数なし実行すると、設定した target を順番に処理します。
+
+```bash
+scripts/run_incremental_sync.sh
+```
 
 Codex CLI からの使い方は [docs/codex-cli-usage.md](/Users/takeshi/ghq/github.com/carbuncle123/local-confluence-indexer/docs/codex-cli-usage.md) を参照してください。
 
