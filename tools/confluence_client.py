@@ -196,7 +196,7 @@ class ConfluenceClient:
     def get_space_by_key(self, space_key: str) -> dict[str, Any]:
         """Resolve a Confluence space by key."""
 
-        url = f"{self.config.base_url}/wiki/rest/api/space/{space_key}"
+        url = f"{self.config.base_url}/rest/api/space/{space_key}"
         payload = self._request_json(url, params={"expand": "homepage"})
         return self._normalize_space(payload)
 
@@ -210,7 +210,7 @@ class ConfluenceClient:
         """List page summaries for a space."""
 
         del body_format
-        url = f"{self.config.base_url}/wiki/rest/api/space/{space_key}/content/page"
+        url = f"{self.config.base_url}/rest/api/space/{space_key}/content/page"
         results = self._paginate(
             url,
             params={
@@ -232,7 +232,7 @@ class ConfluenceClient:
         """Fetch a page detail payload."""
 
         del body_format, include_labels, include_version
-        url = f"{self.config.base_url}/wiki/rest/api/content/{page_id}"
+        url = f"{self.config.base_url}/rest/api/content/{page_id}"
         payload = self._request_json(
             url,
             params={
@@ -256,7 +256,7 @@ class ConfluenceClient:
             f'space = "{space_key}" and type = page and '
             f'lastmodified >= "{since}" order by lastmodified asc'
         )
-        url = f"{self.config.base_url}/wiki/rest/api/content/search"
+        url = f"{self.config.base_url}/rest/api/content/search"
         return self._paginate(url, params={"cql": cql, "limit": 25})
 
     def _normalize_space(self, payload: dict[str, Any]) -> dict[str, Any]:
