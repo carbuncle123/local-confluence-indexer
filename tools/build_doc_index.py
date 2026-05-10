@@ -13,13 +13,27 @@ import yaml
 from db import (
     ChunkRecord,
     DocumentRecord,
+    VectorChunkRecord,
+    clear_all_vector_chunks,
     clear_documents_for_space,
+    clear_vector_chunks_for_space,
     connect_index_db,
     initialize_index_db,
+    insert_vector_chunks,
+    list_all_chunks,
+    list_chunks_for_space,
     replace_chunks_for_document,
     upsert_document,
 )
-from utils import DEFAULT_INDEX_DB_PATH
+from utils import DEFAULT_INDEX_DB_PATH, now_iso
+from vector_index import (
+    SUPPORTED_VECTOR_BACKENDS,
+    VECTOR_BACKEND_FAISS,
+    VECTOR_BACKEND_NONE,
+    VectorBackendConfig,
+    build_faiss_artifacts,
+    load_vector_backend_config,
+)
 
 
 MAX_CHUNK_CHARS = 3000
@@ -52,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--space", help="対象の Confluence space key")
     parser.add_argument("--all", action="store_true", help="全 space を対象に再構築する")
+    parser.add_argument(
+        "--vector-backend",
+        choices=sorted(SUPPORTED_VECTOR_BACKENDS),
+        default=None,
+        help="ベクトルインデックスのバックエンド (faiss または none)。未指定なら環境変数を使用。",
+    )
     return parser
 
 
@@ -310,6 +330,114 @@ def index_manifest(manifest_path: Path, index_db_path: Path = DEFAULT_INDEX_DB_P
     return len(entries)
 
 
+def resolve_vector_backend_config(cli_value: str | None) -> VectorBackendConfig:
+    """Build a VectorBackendConfig that respects CLI overrides."""
+
+    config = load_vector_backend_config()
+    if cli_value is not None:
+        config.backend = cli_value
+    return config
+
+
+def rebuild_vector_index_for_space(
+    space_key: str,
+    *,
+    config: VectorBackendConfig,
+    index_db_path: Path = DEFAULT_INDEX_DB_PATH,
+    embedder_factory=None,
+) -> int:
+    """Rebuild the FAISS vector index for a single space."""
+
+    if config.backend != VECTOR_BACKEND_FAISS:
+        return 0
+
+    with connect_index_db(index_db_path) as connection:
+        initialize_index_db(connection)
+        chunks = list_chunks_for_space(connection, space_key)
+        clear_vector_chunks_for_space(connection, space_key)
+
+        if not chunks:
+            return 0
+
+        if _has_other_space_vectors(connection, space_key):
+            raise SystemExit(
+                "FAISS index は 1 space 単位の再構築のみ対応しています。"
+                " 全 space を再構築するには `--all` を指定してください。"
+            )
+
+        result, vector_rows = build_faiss_artifacts(
+            chunks,
+            config=config,
+            embedder_factory=embedder_factory,
+        )
+        _persist_vector_rows(connection, vector_rows, meta_model=config.embedding_model, embedding_dim=result.embedding_dim)
+        return result.chunk_count
+
+
+def rebuild_vector_index_for_all(
+    *,
+    config: VectorBackendConfig,
+    index_db_path: Path = DEFAULT_INDEX_DB_PATH,
+    embedder_factory=None,
+) -> int:
+    """Rebuild the FAISS vector index across every space."""
+
+    if config.backend != VECTOR_BACKEND_FAISS:
+        return 0
+
+    with connect_index_db(index_db_path) as connection:
+        initialize_index_db(connection)
+        chunks = list_all_chunks(connection)
+        clear_all_vector_chunks(connection)
+
+        if not chunks:
+            return 0
+
+        result, vector_rows = build_faiss_artifacts(
+            chunks,
+            config=config,
+            embedder_factory=embedder_factory,
+        )
+        _persist_vector_rows(connection, vector_rows, meta_model=config.embedding_model, embedding_dim=result.embedding_dim)
+        return result.chunk_count
+
+
+def _has_other_space_vectors(connection, space_key: str) -> bool:
+    row = connection.execute(
+        "SELECT COUNT(*) AS c FROM vector_chunks WHERE space_key != ?",
+        (space_key,),
+    ).fetchone()
+    return bool(row and row["c"] > 0)
+
+
+def _persist_vector_rows(
+    connection,
+    vector_rows: list[tuple[int, str, dict[str, Any]]],
+    *,
+    meta_model: str,
+    embedding_dim: int,
+) -> None:
+    if not vector_rows:
+        return
+    created_at = now_iso()
+    records = [
+        VectorChunkRecord(
+            vector_id=vector_id,
+            chunk_id=chunk["chunk_id"],
+            doc_id=chunk["doc_id"],
+            space_key=chunk["space_key"],
+            page_id=chunk["page_id"],
+            embedding_model=meta_model,
+            embedding_dim=embedding_dim,
+            content_hash=content_hash,
+            created_at=created_at,
+            metadata_json=None,
+        )
+        for vector_id, content_hash, chunk in vector_rows
+    ]
+    insert_vector_chunks(connection, records)
+
+
 def main() -> int:
     """Run the index build CLI."""
 
@@ -331,6 +459,19 @@ def main() -> int:
         indexed_count += index_manifest(manifest_path)
 
     print(f"Indexed {indexed_count} documents.")
+
+    vector_config = resolve_vector_backend_config(args.vector_backend)
+    if vector_config.backend == VECTOR_BACKEND_FAISS:
+        if args.all:
+            vector_count = rebuild_vector_index_for_all(config=vector_config)
+        else:
+            vector_count = rebuild_vector_index_for_space(args.space, config=vector_config)
+        print(
+            f"Built FAISS vector index for {vector_count} chunks "
+            f"(model={vector_config.embedding_model})."
+        )
+    elif vector_config.backend == VECTOR_BACKEND_NONE:
+        pass
     return 0
 
 

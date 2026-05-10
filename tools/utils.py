@@ -18,6 +18,10 @@ DEFAULT_SYNC_DIR = Path(".local-confluence-sync")
 DEFAULT_SYNC_DB_PATH = DEFAULT_SYNC_DIR / "state.db"
 DEFAULT_INDEX_DIR = Path(".local-doc-index")
 DEFAULT_INDEX_DB_PATH = DEFAULT_INDEX_DIR / "docs.db"
+DEFAULT_FAISS_INDEX_PATH = DEFAULT_INDEX_DIR / "faiss.index"
+DEFAULT_VECTOR_META_PATH = DEFAULT_INDEX_DIR / "vector_meta.json"
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_EMBEDDING_BATCH_SIZE = 32
 
 
 def phase1_placeholder(name: str) -> str:

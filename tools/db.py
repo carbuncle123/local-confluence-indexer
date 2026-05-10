@@ -164,6 +164,23 @@ USING fts5(
   body,
   tokenize = 'trigram'
 );
+
+CREATE TABLE IF NOT EXISTS vector_chunks (
+  vector_id INTEGER PRIMARY KEY,
+  chunk_id TEXT NOT NULL UNIQUE,
+  doc_id TEXT NOT NULL,
+  space_key TEXT NOT NULL,
+  page_id TEXT NOT NULL,
+  embedding_model TEXT NOT NULL,
+  embedding_dim INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  metadata_json TEXT,
+  FOREIGN KEY(chunk_id) REFERENCES chunks(chunk_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vector_chunks_space_key
+  ON vector_chunks(space_key);
 """
 
 
@@ -327,6 +344,22 @@ class ChunkRecord:
     end_line: int | None = None
     token_count: int | None = None
     labels_json: str | None = None
+    metadata_json: str | None = None
+
+
+@dataclass(slots=True)
+class VectorChunkRecord:
+    """A row in the vector_chunks table."""
+
+    vector_id: int
+    chunk_id: str
+    doc_id: str
+    space_key: str
+    page_id: str
+    embedding_model: str
+    embedding_dim: int
+    content_hash: str
+    created_at: str
     metadata_json: str | None = None
 
 
@@ -1234,3 +1267,97 @@ def list_chunks_for_document(connection: sqlite3.Connection, doc_id: str) -> lis
         (doc_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def list_chunks_for_space(connection: sqlite3.Connection, space_key: str) -> list[dict[str, Any]]:
+    """Load all chunks belonging to a space ordered for stable rebuild."""
+
+    rows = connection.execute(
+        """
+        SELECT * FROM chunks
+        WHERE space_key = ?
+        ORDER BY doc_id ASC, chunk_index ASC
+        """,
+        (space_key,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_all_chunks(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Load every chunk in the index, used for full rebuilds."""
+
+    rows = connection.execute(
+        """
+        SELECT * FROM chunks
+        ORDER BY space_key ASC, doc_id ASC, chunk_index ASC
+        """,
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def clear_vector_chunks_for_space(connection: sqlite3.Connection, space_key: str) -> None:
+    """Remove vector_chunks rows belonging to a space."""
+
+    connection.execute("DELETE FROM vector_chunks WHERE space_key = ?", (space_key,))
+    connection.commit()
+
+
+def clear_all_vector_chunks(connection: sqlite3.Connection) -> None:
+    """Remove every vector_chunks row."""
+
+    connection.execute("DELETE FROM vector_chunks")
+    connection.commit()
+
+
+def insert_vector_chunks(
+    connection: sqlite3.Connection,
+    records: list[VectorChunkRecord],
+) -> None:
+    """Insert vector_chunks rows in bulk preserving caller-assigned vector ids."""
+
+    if not records:
+        connection.commit()
+        return
+
+    connection.executemany(
+        """
+        INSERT INTO vector_chunks (
+          vector_id, chunk_id, doc_id, space_key, page_id,
+          embedding_model, embedding_dim, content_hash, created_at, metadata_json
+        ) VALUES (
+          :vector_id, :chunk_id, :doc_id, :space_key, :page_id,
+          :embedding_model, :embedding_dim, :content_hash, :created_at, :metadata_json
+        )
+        """,
+        [asdict(record) for record in records],
+    )
+    connection.commit()
+
+
+def list_vector_chunks(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Load all vector_chunks rows ordered by vector_id."""
+
+    rows = connection.execute(
+        "SELECT * FROM vector_chunks ORDER BY vector_id ASC",
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def count_vector_chunks(connection: sqlite3.Connection) -> int:
+    """Return the total number of vector_chunks rows."""
+
+    row = connection.execute("SELECT COUNT(*) AS c FROM vector_chunks").fetchone()
+    return int(row["c"]) if row else 0
+
+
+def get_vector_chunk_by_vector_id(
+    connection: sqlite3.Connection,
+    vector_id: int,
+) -> dict[str, Any] | None:
+    """Resolve a vector_id to its vector_chunks row."""
+
+    row = connection.execute(
+        "SELECT * FROM vector_chunks WHERE vector_id = ?",
+        (vector_id,),
+    ).fetchone()
+    return row_to_dict(row)
