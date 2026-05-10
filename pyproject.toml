@@ -12,6 +12,13 @@ dependencies = [
   "requests>=2.31.0",
 ]
 
+[project.optional-dependencies]
+vector = [
+  "sentence-transformers>=3.0.0",
+  "numpy>=1.26.0",
+  "faiss-cpu>=1.8.0",
+]
+
 [dependency-groups]
 dev = [
   "pytest>=8.0.0",

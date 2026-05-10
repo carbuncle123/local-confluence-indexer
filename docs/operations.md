@@ -193,6 +193,31 @@ page tree の場合:
 uv run python tools/sync_confluence.py full --space PROJECT_B --root-page-id 123456
 ```
 
+## ベクトル / ハイブリッド検索
+
+FAISS によるベクトル検索を併用する場合の運用手順です。
+
+```bash
+# 依存追加 (初回のみ)
+uv sync --extra vector
+
+# .env で DOC_VECTOR_BACKEND=faiss を有効化するか、CLI で個別指定
+uv run python tools/build_doc_index.py --space PROJECT_A --vector-backend faiss
+```
+
+検索:
+
+```bash
+uv run python tools/search_docs.py "ログイン状態を延長する仕組み" --space PROJECT_A --mode hybrid
+```
+
+注意点:
+
+- ベクトル再構築は space 単位 (または `--all`) です。差分更新には現状未対応で、`--vector-backend faiss` 付きの再ビルドで全面再構築されます
+- `scripts/run_incremental_sync.sh` の reindex は FTS のみを再構築します。ベクトルも更新したい場合は別途 `uv run python tools/build_doc_index.py --space ... --vector-backend faiss` を実行してください
+- embedding model を変更した場合は必ず再構築してください (`vector_meta.json` の `embedding_model` と一致しないとエラーになります)
+- `--mode vector` で FAISS index が無い場合はエラー、`--mode hybrid` の場合は警告のうえ FTS のみで結果を返します
+
 ## 運用上の注意
 
 - `.env`、同期済み Markdown、ローカル SQLite はコミットしない
